@@ -151,8 +151,10 @@ jobs:
         include:
           - target: windows-arm64
             ext: dll
-          - target: freebsd-amd64
-            ext: so
+          # freebsd-amd64 is deliberately absent: go-cross/cgo-actions hardcodes
+          # FreeBSD 14.3-RELEASE, which the FreeBSD mirrors have since removed
+          # (download.freebsd.org now serves 14.4+), so the fetch 404s. Re-add it
+          # once the action tracks a current release.
     defaults:
       run:
         shell: bash
@@ -274,7 +276,7 @@ jobs:
           cat out/checksums.txt
           # Every platform the host can ask for must be present, or the release
           # would ship a registry that points at a missing archive.
-          for t in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64 windows_amd64 windows_arm64 freebsd_amd64; do
+          for t in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64 windows_amd64 windows_arm64; do
             test -f "out/workbuddy_${VERSION}_${t}.zip" || { echo "missing workbuddy_${VERSION}_${t}.zip"; exit 1; }
           done
 
@@ -335,7 +337,6 @@ jobs:
           | \`workbuddy_${VERSION}_darwin_arm64.zip\` | \`workbuddy.dylib\` |
           | \`workbuddy_${VERSION}_windows_amd64.zip\` | \`workbuddy.dll\` |
           | \`workbuddy_${VERSION}_windows_arm64.zip\` | \`workbuddy.dll\` |
-          | \`workbuddy_${VERSION}_freebsd_amd64.zip\` | \`workbuddy.so\` |
           | \`checksums.txt\` | SHA-256 of the zips |
           | \`registry.json\` | plugin-source manifest for this version |
 

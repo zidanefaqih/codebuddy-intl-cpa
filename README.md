@@ -189,7 +189,7 @@ Platform layout also works: `plugins/linux/amd64/workbuddy.so`.
 | | |
 | --- | --- |
 | Minimum host | CLIProxyAPI 7.2.30 (verified against 7.2.145) |
-| Built for | linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64, windows/arm64, freebsd/amd64 |
+| Built for | linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64, windows/arm64 |
 | Plugin id | `workbuddy` |
 | Go | 1.26 |
 
