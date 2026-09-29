@@ -1,0 +1,29 @@
+{
+  "schema_version": 2,
+  "plugins": [
+    {
+      "id": "workbuddy",
+      "name": "WorkBuddy (Global/Intl)",
+      "description": "Tencent CodeBuddy / WorkBuddy OAuth provider for CLIProxyAPI, built for Global (Intl) accounts. Daily 30-credit reward via the growth centre on Global accounts, in-plugin 429/code-6004 failover, per-request credit and token log with panel, hidden upstream models, Intl realm routing, CN daily check-in, Global one-shot expert trial, credit lifecycle and a CN/Global credits panel.",
+      "author": "zidanefaqih",
+      "version": "0.9.0",
+      "release_tag": "workbuddy-v0.9.0",
+      "repository": "https://github.com/zidanefaqih/codebuddy-intl-cpa",
+      "homepage": "https://github.com/zidanefaqih/codebuddy-intl-cpa",
+      "logo": "https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/WorkBuddy.png",
+      "license": "MIT",
+      "install": {
+        "type": "github-release"
+      },
+      "tags": [
+        "Provider",
+        "OAuth",
+        "CodeBuddy",
+        "WorkBuddy",
+        "Global",
+        "Intl",
+        "Management"
+      ]
+    }
+  ]
+}

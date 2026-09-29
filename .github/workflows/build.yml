@@ -1,0 +1,362 @@
+# Multi-arch build & release for the WorkBuddy / CodeBuddy CPA plugin.
+#
+#   - tag 'workbuddy-v*'  → release that version
+#   - workflow_dispatch   → pick a version manually
+#   - plain push/PR       → CI builds + tests only (artifacts, no release)
+#
+# Asset naming matches CLIProxyAPI pluginstore ArchiveName():
+#   <id>_<version>_<goos>_<goarch>.zip   (zip root: <id>.so|.dylib|.dll)
+
+name: Build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["workbuddy-v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without v (empty = the plugin's VERSION file)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: workbuddy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: workbuddy/go.mod
+          cache-dependency-path: workbuddy/go.sum
+      - name: Validate registry.json
+        working-directory: .
+        run: python3 scripts/validate-registry.py registry.json
+      - name: Test
+        run: go test ./...
+      - name: Vet
+        run: go vet ./...
+
+  build:
+    name: workbuddy ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            runner: ubuntu-24.04
+            ext: so
+          - goos: linux
+            goarch: arm64
+            runner: ubuntu-24.04-arm
+            ext: so
+          - goos: darwin
+            goarch: amd64
+            runner: macos-15-intel
+            ext: dylib
+          - goos: darwin
+            goarch: arm64
+            runner: macos-15
+            ext: dylib
+          - goos: windows
+            goarch: amd64
+            runner: windows-2025
+            ext: dll
+    defaults:
+      run:
+        shell: bash
+        working-directory: workbuddy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: workbuddy/go.mod
+          cache-dependency-path: workbuddy/go.sum
+
+      - name: Resolve release metadata
+        working-directory: .
+        run: |
+          set -euo pipefail
+          # Version resolution: this plugin's tag > dispatch input > VERSION file
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME}" == workbuddy-v* ]]; then
+            VERSION="${GITHUB_REF_NAME#workbuddy-v}"
+          elif [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="$(tr -d ' \n\r' < workbuddy/VERSION)"
+          fi
+          CLEAN_VERSION="${VERSION%%+*}"
+          echo "VERSION=${CLEAN_VERSION}" >> "${GITHUB_ENV}"
+          echo "LIB_NAME=workbuddy.${{ matrix.ext }}" >> "${GITHUB_ENV}"
+          echo "ARCHIVE_NAME=workbuddy_${CLEAN_VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}.zip" >> "${GITHUB_ENV}"
+          echo "version=${CLEAN_VERSION} archive=workbuddy_${CLEAN_VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}.zip"
+
+      - name: Build shared library
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          CGO_ENABLED=1 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath -buildmode=c-shared \
+              -ldflags "-s -w -X main.version=${VERSION}" \
+              -o "dist/${LIB_NAME}" .
+          rm -f dist/*.h || true
+          file "dist/${LIB_NAME}" || true
+
+      - name: Package plugin (CPA ArchiveName)
+        working-directory: .
+        run: |
+          set -euo pipefail
+          go run ./.github/scripts/package-release.go \
+            -library "workbuddy/dist/${LIB_NAME}" \
+            -archive "${ARCHIVE_NAME}" \
+            -checksum "${ARCHIVE_NAME}.sha256"
+          python3 - <<'PY'
+          import zipfile, os, sys
+          name = os.environ["ARCHIVE_NAME"]
+          lib = os.environ["LIB_NAME"]
+          with zipfile.ZipFile(name) as z:
+              names = z.namelist()
+              print("zip entries:", names)
+              if lib not in names:
+                  sys.exit(f"zip root missing {lib}: {names}")
+          PY
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_NAME }}
+          path: |
+            ${{ env.ARCHIVE_NAME }}
+            ${{ env.ARCHIVE_NAME }}.sha256
+          if-no-files-found: error
+
+  build-cross:
+    name: workbuddy ${{ matrix.target }} (go-cross)
+    needs: test
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-arm64
+            ext: dll
+          - target: freebsd-amd64
+            ext: so
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: workbuddy/go.mod
+          cache-dependency-path: workbuddy/go.sum
+
+      - name: Resolve release metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME}" == workbuddy-v* ]]; then
+            VERSION="${GITHUB_REF_NAME#workbuddy-v}"
+          elif [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="$(tr -d ' \n\r' < workbuddy/VERSION)"
+          fi
+          CLEAN_VERSION="${VERSION%%+*}"
+          GOOS_PART="${{ matrix.target }}"
+          echo "VERSION=${CLEAN_VERSION}" >> "${GITHUB_ENV}"
+          echo "version=${CLEAN_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "ARCHIVE_NAME=workbuddy_${CLEAN_VERSION}_${GOOS_PART%-*}_${GOOS_PART#*-}.zip" >> "${GITHUB_ENV}"
+          echo "LIB_NAME=workbuddy.${{ matrix.ext }}" >> "${GITHUB_ENV}"
+
+      - name: Build cross shared library
+        timeout-minutes: 45
+        uses: go-cross/cgo-actions@v1
+        env:
+          GOFLAGS: -trimpath -buildmode=c-shared
+        with:
+          dir: workbuddy
+          packages: .
+          targets: ${{ matrix.target }}
+          out-dir: dist/${{ matrix.target }}
+          output: ${{ env.LIB_NAME }}
+          flags: -ldflags=-s -w
+          x-flags: main.version=${{ steps.meta.outputs.version }}
+
+      - name: Package plugin
+        run: |
+          set -euo pipefail
+          rm -f go-cross-bin.h workbuddy/dist/${{ matrix.target }}/workbuddy.h || true
+          LIB=""
+          for p in \
+            "workbuddy/dist/${{ matrix.target }}/${LIB_NAME}" \
+            "dist/${{ matrix.target }}/${LIB_NAME}" \
+            "workbuddy/dist/${LIB_NAME}"; do
+            if [ -f "$p" ]; then LIB="$p"; break; fi
+          done
+          if [ -z "$LIB" ]; then
+            echo "library not found"; find . -name '*.dll' -o -name '*.so' | head
+            exit 1
+          fi
+          go run ./.github/scripts/package-release.go \
+            -library "${LIB}" \
+            -archive "${ARCHIVE_NAME}" \
+            -checksum "${ARCHIVE_NAME}.sha256"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_NAME }}
+          path: |
+            ${{ env.ARCHIVE_NAME }}
+            ${{ env.ARCHIVE_NAME }}.sha256
+          if-no-files-found: error
+
+  release:
+    name: Release
+    # Only for a version tag of this plugin, or a dispatch WITH a version.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '') ||
+      startsWith(github.ref, 'refs/tags/workbuddy-v')
+    needs:
+      - build
+      - build-cross
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: meta
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            V="${{ github.event.inputs.version }}"
+          else
+            V="${GITHUB_REF_NAME#workbuddy-v}"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "tag=workbuddy-v${V}" >> "$GITHUB_OUTPUT"
+          echo "Releasing workbuddy v$V"
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Assemble checksums.txt
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          mv dist/workbuddy_${VERSION}_*.zip* out/ 2>/dev/null || true
+          ls -la out/
+          if ls out/*.sha256 >/dev/null 2>&1; then
+            sort out/*.sha256 > out/checksums.txt
+          else
+            (cd out && sha256sum *.zip > checksums.txt)
+          fi
+          cat out/checksums.txt
+          # Every platform the host can ask for must be present, or the release
+          # would ship a registry that points at a missing archive.
+          for t in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64 windows_amd64 windows_arm64 freebsd_amd64; do
+            test -f "out/workbuddy_${VERSION}_${t}.zip" || { echo "missing workbuddy_${VERSION}_${t}.zip"; exit 1; }
+          done
+
+      - name: Stamp registry.json with the released version
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib
+          v = os.environ["VERSION"]
+          p = pathlib.Path("registry.json")
+          data = json.loads(p.read_text())
+          for plug in data.get("plugins", []):
+              if plug.get("id") == "workbuddy":
+                  plug["version"] = v
+                  plug["release_tag"] = f"workbuddy-v{v}"
+          p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+          print(p.read_text())
+          PY
+          python3 scripts/validate-registry.py registry.json
+          # The release carries this file as an asset too, because the workflow
+          # cannot commit the bump back to the branch (protected branch / no
+          # write token here). Keeping the asset authoritative means a host that
+          # points its store-source at the release always sees the right version,
+          # and the repo copy is refreshed on the next manual edit.
+          cp registry.json out/registry.json
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE:-}" != "tag" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+              git tag -a "${TAG}" -m "Release workbuddy v${VERSION}"
+              git push origin "${TAG}"
+            fi
+          fi
+          NOTES=$(cat <<EOF
+          ## WorkBuddy / CodeBuddy CPA plugin v${VERSION}
+
+          Multi-arch builds for the [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
+          plugin store (\`github-release\` install type).
+
+          ### Assets (pluginstore \`ArchiveName(id, version, goos, goarch)\`)
+          | File | Contents |
+          |---|---|
+          | \`workbuddy_${VERSION}_linux_amd64.zip\` | \`workbuddy.so\` |
+          | \`workbuddy_${VERSION}_linux_arm64.zip\` | \`workbuddy.so\` |
+          | \`workbuddy_${VERSION}_darwin_amd64.zip\` | \`workbuddy.dylib\` |
+          | \`workbuddy_${VERSION}_darwin_arm64.zip\` | \`workbuddy.dylib\` |
+          | \`workbuddy_${VERSION}_windows_amd64.zip\` | \`workbuddy.dll\` |
+          | \`workbuddy_${VERSION}_windows_arm64.zip\` | \`workbuddy.dll\` |
+          | \`workbuddy_${VERSION}_freebsd_amd64.zip\` | \`workbuddy.so\` |
+          | \`checksums.txt\` | SHA-256 of the zips |
+          | \`registry.json\` | plugin-source manifest for this version |
+
+          ### Install via plugin source
+          \`\`\`
+          ${REPO_URL}/releases/latest/download/registry.json
+          \`\`\`
+          Or the branch copy: \`${REPO_URL}/raw/main/registry.json\`
+
+          ### Manual install (linux/amd64)
+          \`\`\`bash
+          unzip workbuddy_${VERSION}_linux_amd64.zip
+          cp workbuddy.so /path/to/cliproxyapi/plugins/workbuddy.so
+          \`\`\`
+          EOF
+          )
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" out/*.zip out/checksums.txt out/registry.json --clobber --repo "${GITHUB_REPOSITORY}"
+          else
+            gh release create "${TAG}" out/*.zip out/checksums.txt out/registry.json \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "workbuddy v${VERSION}" \
+              --notes "${NOTES}"
+          fi

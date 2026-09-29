@@ -1,0 +1,21 @@
+# Build outputs (c-shared plugin library + generated header)
+workbuddy/dist/
+workbuddy/*.so
+workbuddy/*.dylib
+workbuddy/*.dll
+workbuddy/*.h
+workbuddy/workbuddy-plus
+
+# Release/CI scratch
+dist/
+out/
+
+# Go
+*.test
+*.out
+coverage.out
+coverage.html
+
+# Editors / OS
+.DS_Store
+*.swp
