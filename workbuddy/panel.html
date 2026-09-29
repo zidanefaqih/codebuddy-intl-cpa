@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WorkBuddy Panel</title>
+<title>CodeBuddy Accounts Panel</title>
 <style>
 /* Theme tokens aligned with CPA management panel (key-policy / themes.scss):
    default :root = light (paper); data-theme=white | dark; embedded iframe syncs parent. */
@@ -200,7 +200,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
 </head>
 <body>
 <div class="wrap">
-  <h1>WorkBuddy Accounts Panel</h1>
+  <h1>CodeBuddy Accounts Panel</h1>
   <div class="sub">Credit balance · CN daily check-in (09:00/21:00) · Global expert pack one-time manual claim · auto disable/delete on exhaustion</div>
   <div id="authBox" class="card" style="display:none;margin-bottom:16px">
     <div style="margin-bottom:8px;color:var(--mut)">A management key is required to access account data. When embedded from the CPA main panel it is picked up automatically. Do not click repeatedly with a wrong key to avoid an IP ban.</div>
@@ -258,7 +258,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     </div>
     <div class="modal-bd">
       <p class="hint">Accepts nested <code>{"auth":{...},"account":{...}}</code> or flat <code>{"accessToken":...}</code>. Saved as <code>workbuddy-&lt;uid&gt;.json</code>.</p>
-      <textarea id="importRaw" rows="8" placeholder='Paste WorkBuddy / CodeBuddy credential JSON'></textarea>
+      <textarea id="importRaw" rows="8" placeholder='Paste CodeBuddy credential JSON'></textarea>
     </div>
     <div class="modal-ft">
       <button type="button" class="sec" onclick="closeImportModal()">Cancel</button>
@@ -686,9 +686,9 @@ async function load(force, btn){
     activeAuthId=d.active_auth||"";
     updateFilterCounts(accounts);
     if(!accounts.length){
-      g.innerHTML='<div class="loading">No WorkBuddy accounts</div>';
+      g.innerHTML='<div class="loading">No CodeBuddy accounts</div>';
       renderSummary([]);
-      if(force) toast("Data refreshed", "warn", "No WorkBuddy accounts");
+      if(force) toast("Data refreshed", "warn", "No CodeBuddy accounts");
       return;
     }
     g.innerHTML=accounts.map(card).join("");

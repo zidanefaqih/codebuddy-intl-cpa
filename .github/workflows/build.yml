@@ -323,7 +323,9 @@ jobs:
             fi
           fi
           NOTES=$(cat <<EOF
-          ## WorkBuddy / CodeBuddy CPA plugin v${VERSION}
+          ## CodeBuddy Intl CPA v${VERSION}
+
+          CLIProxyAPI plugin for Tencent CodeBuddy, built for **Global (Intl)** accounts.
 
           Multi-arch builds for the [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
           plugin store (\`github-release\` install type).
@@ -358,6 +360,6 @@ jobs:
           else
             gh release create "${TAG}" out/*.zip out/checksums.txt out/registry.json \
               --repo "${GITHUB_REPOSITORY}" \
-              --title "workbuddy v${VERSION}" \
+              --title "CodeBuddy Intl CPA v${VERSION}" \
               --notes "${NOTES}"
           fi

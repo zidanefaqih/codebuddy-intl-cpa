@@ -1,8 +1,15 @@
-# workbuddy-plus
+# CodeBuddy Intl CPA
 
-A **CLIProxyAPI (CPA)** provider plugin for **Tencent CodeBuddy / WorkBuddy**, built for
-**Global (Intl) accounts** — including the daily credit reward that other CPA WorkBuddy
-plugins skip.
+A **CLIProxyAPI (CPA)** provider plugin for **Tencent CodeBuddy**, built for **Global (Intl)
+accounts** — including the daily credit reward that other CPA plugins skip.
+
+> **On the name.** The project is `codebuddy-intl-cpa`. The plugin it ships keeps the internal
+> id `workbuddy` — the file `workbuddy.so`, the auth type `workbuddy`, the credential files
+> `workbuddy-<uid>.json`, the config key `plugins.configs.workbuddy`, and the release asset
+> names. That id is a host-side contract shared with every existing install and with the
+> credential files already on disk, so renaming it would orphan them. Everything a human reads
+> — this README, the store listing, the plugin metadata, the panel, the release title — says
+> **CodeBuddy Intl CPA**.
 
 > **Status:** runs in production. 46 Go files (~10.9k lines) + a 1,061-line management panel.
 > Verified against CLIProxyAPI **7.2.145**.
@@ -11,14 +18,14 @@ plugins skip.
 
 ## Why this one
 
-The CPA WorkBuddy plugins that exist today are **CN-first**: they gate the growth centre
+The CPA plugins for this provider that exist today are **CN-first**: they gate the growth centre
 to the domestic realm, on the assumption that the endpoint family simply does not exist
 overseas. That assumption is wrong, and it leaves Global accounts with no daily income at
 all — just the flat 100 credits/month free plan.
 
 This plugin does the opposite:
 
-| | Other CPA WorkBuddy plugins | This plugin |
+| | Other CPA plugins | This plugin |
 | --- | --- | --- |
 | Growth centre (`/v2/report`, heatmap, streak) | CN realm only | **CN + Global** |
 | Daily credit reward on Global accounts | ✗ | ✅ **30 credits/day** |
@@ -95,7 +102,7 @@ hit bills ~0.05 credit instead of ~0.62.
 
 ### 4. Hidden upstream models
 
-WorkBuddy accepts more models than its own model list advertises. This plugin exposes them
+CodeBuddy accepts more models than its own model list advertises. This plugin exposes them
 statically so they are routable:
 
 ```

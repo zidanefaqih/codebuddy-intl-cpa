@@ -336,10 +336,10 @@ func wbRegistration() registration {
 	return registration{
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
-			Name:             providerName,
+			Name:             "CodeBuddy Intl CPA",
 			Version:          version,
-			Author:           "Sliverkiss (based on workbuddy by lovingfish)",
-			GitHubRepository: "https://github.com/Sliverkiss/cpa-plugin",
+			Author:           "zidanefaqih (based on Sliverkiss/cpa-plugin, itself based on workbuddy by lovingfish)",
+			GitHubRepository: "https://github.com/zidanefaqih/codebuddy-intl-cpa",
 			Logo:             pluginLogoURL,
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily auto check-in at 09:00 and 21:00 local time for CN accounts (default true)."},
