@@ -80,7 +80,7 @@ import (
 const (
 	providerName  = "workbuddy"
 	authFileName  = "workbuddy.json"
-	pluginLogoURL = "https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/WorkBuddy.png"
+	pluginLogoURL = "https://raw.githubusercontent.com/zidanefaqih/codebuddy-intl-cpa/main/logo.png"
 	// CN chat/auth gateway (iss = codebuddy.cn realm).
 	upstreamBaseCN = "https://copilot.tencent.com"
 	// Global chat/auth gateway (iss = workbuddy.ai realm). APISIX on
