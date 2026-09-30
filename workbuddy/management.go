@@ -1,4 +1,4 @@
-// management.go implements the WorkBuddy management API and web panel:
+// management.go implements the CodeBuddy management API and web panel:
 // account dashboard (nickname, credits, plan, check-in streak), manual/auto
 // check-in (daily at 09:00 and 21:00 local time), and quota refresh.
 package main
@@ -143,12 +143,12 @@ func managementRegistration() managementRegistrationResponse {
 	base := "/plugins/" + providerName
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
-			{Method: http.MethodGet, Path: base + "/accounts", Description: "List WorkBuddy accounts with credits, plan and check-in status."},
+			{Method: http.MethodGet, Path: base + "/accounts", Description: "List CodeBuddy accounts with credits, plan and check-in status."},
 			{Method: http.MethodPost, Path: base + "/refresh", Description: "Force refresh quota/cache for all accounts."},
 			{Method: http.MethodPost, Path: base + "/checkin", Description: "Manually check in one account (auth_index) or all."},
 			{Method: http.MethodPost, Path: base + "/checkin/config", Description: "Toggle auto check-in (enabled: true/false)."},
 			{Method: http.MethodGet, Path: base + "/credits", Description: "Get real-time credits for one (auth_index query) or all accounts."},
-			{Method: http.MethodPost, Path: base + "/import", Description: "Import WorkBuddy credential JSON (nested or flat) into host auth store."},
+			{Method: http.MethodPost, Path: base + "/import", Description: "Import CodeBuddy credential JSON (nested or flat) into host auth store."},
 			{Method: http.MethodPost, Path: base + "/trial", Description: "Claim expert trial pack for one Global account (auth_index). One-time 250 credits / 14 days."},
 			{Method: http.MethodPost, Path: base + "/select", Description: "Select the active account card used for chat routing (body: {auth_index})."},
 			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
@@ -160,7 +160,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodGet, Path: base + "/usage/summary", Description: "Per-account usage summary (last/today/all credit + requests)."},
 		},
 		Resources: []resourceRoute{
-			{Path: "/panel", Menu: "WorkBuddy", Description: "WorkBuddy dashboard: credits, check-in, plan, import."},
+			{Path: "/panel", Menu: "CodeBuddy", Description: "CodeBuddy dashboard: credits, check-in, plan, import."},
 		},
 	}
 }

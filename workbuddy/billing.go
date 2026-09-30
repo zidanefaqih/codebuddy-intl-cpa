@@ -15,8 +15,8 @@ import (
 )
 
 // isGlobalDomain reports whether the domain belongs to the international
-// (www.workbuddy.ai) WorkBuddy service.  The CN service uses
-// www.codebuddy.cn; Global uses www.workbuddy.ai.
+// (Global) CodeBuddy service.  The CN service uses www.codebuddy.cn;
+// Global uses www.workbuddy.ai or www.codebuddy.ai.
 func isGlobalDomain(domain string) bool {
 	d := strings.ToLower(strings.TrimSpace(domain))
 	return d == "workbuddy.ai" || strings.HasSuffix(d, ".workbuddy.ai") || d == "codebuddy.ai" || strings.HasSuffix(d, ".codebuddy.ai")

@@ -29,7 +29,7 @@ func wbModels() []pluginapi.ModelInfo {
 		{ID: "hy3-preview-agent", Name: "Hy3 Preview Agent", ContextLength: 262144, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "deepseek-v4-pro", Name: "DeepSeek V4 Pro", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "deepseek-v4-flash", Name: "DeepSeek V4 Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		// Hidden models that WorkBuddy upstream accepts when called directly.
+		// Hidden models that the CodeBuddy upstream accepts when called directly.
 		{ID: "gpt-5.6-luna", Name: "GPT-5.6 Luna", ContextLength: 200000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "claude-opus-5", Name: "Claude Opus 5", ContextLength: 200000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "gpt-5.6-sol", Name: "GPT-5.6 Sol", ContextLength: 200000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
@@ -37,6 +37,10 @@ func wbModels() []pluginapi.ModelInfo {
 		{ID: "gpt-5.6-terra", Name: "GPT-5.6 Terra", ContextLength: 200000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "deepseek-v4.1-flash", Name: "DeepSeek V4.1 Flash", ContextLength: 200000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "glm-5.3-flash", Name: "GLM-5.3 Flash", ContextLength: 200000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		// Live-verified 2026-09-29: 200 on a Global account, served as
+		// gpt-6-astra, credit 0.04 for 18 prompt + 5 completion tokens. Not in
+		// any other CPA plugin's list, so it is easy to miss.
+		{ID: "gpt-6-astra", Name: "GPT-6 Astra", ContextLength: 200000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 	}
 }
 
@@ -76,7 +80,7 @@ func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
 	return wbModels()
 }
 
-// fetchDynamicModels calls the WorkBuddy API to get the latest model list.
+// fetchDynamicModels calls the CodeBuddy API to get the latest model list.
 // Falls back to the hardcoded list on any error.
 // extractAccessToken handles both flat (CPA UI) and nested (plugin OAuth) auth file shapes.
 func extractAccessToken(raw []byte) (string, bool) {

@@ -1,6 +1,8 @@
 # Multi-arch build & release for the WorkBuddy / CodeBuddy CPA plugin.
 #
-#   - tag 'workbuddy-v*'  → release that version
+#   - tag 'v*'            → release that version ('workbuddy-v*' is accepted too,
+#                           but the official CLIProxyAPI plugin store requires the
+#                           release tag to be v<version>, so v* is what to push)
 #   - workflow_dispatch   → pick a version manually
 #   - plain push/PR       → CI builds + tests only (artifacts, no release)
 #
@@ -13,7 +15,7 @@ on:
   pull_request:
   push:
     branches: [main]
-    tags: ["workbuddy-v*"]
+    tags: ["v*", "workbuddy-v*"]
   workflow_dispatch:
     inputs:
       version:
@@ -89,8 +91,10 @@ jobs:
         run: |
           set -euo pipefail
           # Version resolution: this plugin's tag > dispatch input > VERSION file
-          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME}" == workbuddy-v* ]]; then
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            # Handles both the current 'v0.9.1' and the legacy 'workbuddy-v0.9.0'.
             VERSION="${GITHUB_REF_NAME#workbuddy-v}"
+            VERSION="${VERSION#v}"
           elif [ -n "${{ github.event.inputs.version }}" ]; then
             VERSION="${{ github.event.inputs.version }}"
           else
@@ -169,8 +173,9 @@ jobs:
         id: meta
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME}" == workbuddy-v* ]]; then
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
             VERSION="${GITHUB_REF_NAME#workbuddy-v}"
+            VERSION="${VERSION#v}"
           elif [ -n "${{ github.event.inputs.version }}" ]; then
             VERSION="${{ github.event.inputs.version }}"
           else
@@ -231,7 +236,8 @@ jobs:
     # Only for a version tag of this plugin, or a dispatch WITH a version.
     if: >-
       (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '') ||
-      startsWith(github.ref, 'refs/tags/workbuddy-v')
+      startsWith(github.ref, 'refs/tags/workbuddy-v') ||
+      startsWith(github.ref, 'refs/tags/v')
     needs:
       - build
       - build-cross
@@ -247,12 +253,17 @@ jobs:
           set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             V="${{ github.event.inputs.version }}"
+            TAG="v${V}"
           else
             V="${GITHUB_REF_NAME#workbuddy-v}"
+            V="${V#v}"
+            # Release under the exact tag that was pushed, so pushing v0.9.1
+            # produces a v0.9.1 release (what the official plugin store reads).
+            TAG="${GITHUB_REF_NAME}"
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "tag=workbuddy-v${V}" >> "$GITHUB_OUTPUT"
-          echo "Releasing workbuddy v$V"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${TAG} (version $V)"
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -293,7 +304,7 @@ jobs:
           for plug in data.get("plugins", []):
               if plug.get("id") == "workbuddy":
                   plug["version"] = v
-                  plug["release_tag"] = f"workbuddy-v{v}"
+                  plug["release_tag"] = f"v{v}"
           p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
           print(p.read_text())
           PY

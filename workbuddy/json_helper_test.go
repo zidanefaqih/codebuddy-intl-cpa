@@ -72,7 +72,7 @@ func TestNextCheckinTime(t *testing.T) {
 	// nextCheckinTime is the scheduler loop's wake-up computation, so it must
 	// account for every scheduled family: checkin (09:00/21:00), keepalive
 	// (22:00) and the Global daily reward (08:00/12:00/16:00/20:00).
-	//	
+	//
 	// 08:00 → next 09:00 (checkin)
 	morning := time.Date(2026, 7, 24, 8, 0, 0, 0, time.UTC)
 	got := nextCheckinTime(morning)

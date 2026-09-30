@@ -1,4 +1,4 @@
-// active_auth.go tracks the panel-selected WorkBuddy account used for routing.
+// active_auth.go tracks the panel-selected CodeBuddy account used for routing.
 //
 // Region (CN vs Global) is taken from that account's stored domain field —
 // no per-request JWT iss decode. Default: first available candidate. When the
