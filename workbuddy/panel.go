@@ -258,7 +258,15 @@ func servePanel(sub string) []byte {
 	if sub != "" && sub != "/" && sub != "/panel" && sub != "/panel.html" {
 		return []byte("<h1>404</h1>")
 	}
-	return panelHTML
+	if pluginPanelBrand == "CodeBuddy" {
+		return panelHTML
+	}
+	// Keep the production panel asset shared while giving isolated test builds
+	// an unmistakable label in the browser and sidebar.
+	body := string(panelHTML)
+	body = strings.ReplaceAll(body, "CodeBuddy", pluginPanelBrand)
+	body = strings.ReplaceAll(body, "/v0/management/plugins/workbuddy", "/v0/management/plugins/"+pluginRouteID)
+	return []byte(body)
 }
 
 //go:embed panel.html

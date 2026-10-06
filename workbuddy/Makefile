@@ -1,12 +1,19 @@
-.PHONY: build test lint clean release
+.PHONY: build build-dev test lint clean release
 
 GO ?= go
 VERSION ?= $(shell tr -d ' \n\r' < VERSION 2>/dev/null || echo "dev")
 LDFLAGS := -X main.version=$(VERSION)
+DEV_VERSION ?= $(VERSION)-dev
+DEV_LDFLAGS := -X main.version=$(DEV_VERSION) -X main.pluginRouteID=workbuddy-dev -X 'main.pluginDisplayName=CodeBuddy Dev' -X 'main.pluginMenuName=CodeBuddy Dev' -X 'main.pluginPanelBrand=CodeBuddy Dev'
 
-# Default target: build the plugin for the current platform.
+# Default target: build the production plugin for the current platform.
 build:
 	CGO_ENABLED=1 $(GO) build -buildmode=c-shared -ldflags "$(LDFLAGS)" -o workbuddy.so .
+
+# Build an isolated test plugin. The filename supplies CPA's plugin ID;
+# provider/auth identifiers remain workbuddy because the test CPA is isolated.
+build-dev:
+	CGO_ENABLED=1 $(GO) build -buildmode=c-shared -ldflags "$(DEV_LDFLAGS)" -o workbuddy-dev.so .
 
 # Run all tests with race detector.
 test:

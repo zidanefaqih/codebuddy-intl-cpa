@@ -140,7 +140,7 @@ func setManagementBasePath(p string) {
 }
 
 func managementRegistration() managementRegistrationResponse {
-	base := "/plugins/" + providerName
+	base := "/plugins/" + pluginRouteID
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
 			{Method: http.MethodGet, Path: base + "/accounts", Description: "List CodeBuddy accounts with credits, plan and check-in status."},
@@ -160,7 +160,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodGet, Path: base + "/usage/summary", Description: "Per-account usage summary (last/today/all credit + requests)."},
 		},
 		Resources: []resourceRoute{
-			{Path: "/panel", Menu: "CodeBuddy", Description: "CodeBuddy dashboard: credits, check-in, plan, import."},
+			{Path: "/panel", Menu: pluginMenuName, Description: pluginPanelBrand + " dashboard: credits, check-in, plan, import."},
 		},
 	}
 }
@@ -173,7 +173,7 @@ func handleManagement(raw []byte) ([]byte, error) {
 	path := strings.TrimRight(req.Path, "/")
 
 	// Browser UI resource routes (unauthenticated).
-	resPrefix := "/v0/resource/plugins/" + providerName
+	resPrefix := "/v0/resource/plugins/" + pluginRouteID
 	if req.Method == http.MethodGet && strings.HasPrefix(path, resPrefix) {
 		sub := strings.TrimPrefix(path, resPrefix)
 		return okEnvelope(mgmtHTMLResponse(servePanel(sub)))
@@ -194,7 +194,7 @@ func handleManagement(raw []byte) ([]byte, error) {
 		}
 	}
 
-	base := loadedManagementBasePath() + "/plugins/" + providerName
+	base := loadedManagementBasePath() + "/plugins/" + pluginRouteID
 	switch {
 	case req.Method == http.MethodGet && path == base+"/accounts":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildDashboardEx(false, false)))
@@ -339,7 +339,7 @@ func managementClientIP(req pluginapi.ManagementRequest) string {
 // mutatingManagementPath reports whether the path performs a write (checkin,
 // import, trial claim, select, refresh, config toggle). Read endpoints pass.
 func mutatingManagementPath(path string) bool {
-	base := loadedManagementBasePath() + "/plugins/" + providerName
+	base := loadedManagementBasePath() + "/plugins/" + pluginRouteID
 	switch path {
 	case base + "/refresh",
 		base + "/checkin",

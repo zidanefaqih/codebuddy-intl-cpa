@@ -330,16 +330,22 @@ type registrationCapability struct {
 	UsagePlugin           bool                         `json:"usage_plugin"`
 }
 
-// version is injected at build time via -ldflags "-X main.version=...".
-// Keep the fallback aligned with VERSION so a plain `go build` does not report
-// a stale plugin version.
-var version = "0.9.2"
+// Build-time identity overrides are used by the isolated dev CPA build. The
+// normal release keeps the production defaults; -ldflags -X can label a test
+// binary without changing the provider/auth identifier (workbuddy).
+var (
+	version           = "0.9.2"
+	pluginRouteID     = providerName
+	pluginDisplayName = "CodeBuddy Intl CPA"
+	pluginMenuName    = "CodeBuddy"
+	pluginPanelBrand  = "CodeBuddy"
+)
 
 func wbRegistration() registration {
 	return registration{
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
-			Name:             "CodeBuddy Intl CPA",
+			Name:             pluginDisplayName,
 			Version:          version,
 			Author:           "zidanefaqih (based on Sliverkiss/cpa-plugin, itself based on workbuddy by lovingfish)",
 			GitHubRepository: "https://github.com/zidanefaqih/codebuddy-intl-cpa",
