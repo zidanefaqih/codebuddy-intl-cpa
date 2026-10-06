@@ -120,8 +120,9 @@ func billingCall(sa *storedAuth, path string, body any) (json.RawMessage, error)
 	return data, err
 }
 
-// isTransientBillingErr reports whether err came from an upstream 5xx or a
-// transport failure (both retryable). 4xx and business-code errors are not.
+// isTransientBillingErr reports whether err came from a transient upstream
+// HTTP 5xx response. Transport failures remain one-shot because the upstream
+// outcome is ambiguous; 4xx and business-code errors are never retried.
 func isTransientBillingErr(err error) bool {
 	if err == nil {
 		return false

@@ -113,6 +113,54 @@ func TestMutatingBillingCallsDoNotRetry5xx(t *testing.T) {
 	}
 }
 
+func TestMutatingBillingCallsDoNotRetryTransportFailure(t *testing.T) {
+	var checkinCalls, trialCalls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var calls *int32
+		switch r.URL.Path {
+		case "/v2/billing/meter/daily-checkin":
+			calls = &checkinCalls
+		case "/billing/ide/trial":
+			calls = &trialCalls
+		default:
+			t.Errorf("unexpected mutation path %s", r.URL.Path)
+			return
+		}
+		atomic.AddInt32(calls, 1)
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Errorf("response writer does not support hijacking")
+			return
+		}
+		conn, _, err := hijacker.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer srv.Close()
+
+	globalAuth := &storedAuth{Auth: storedTokens{Domain: "www.workbuddy.ai"}}
+	cnAuth := &storedAuth{Auth: storedTokens{Domain: "www.codebuddy.cn"}}
+	restoreGlobal := setBillingBaseGlobal(srv.URL)
+	if _, err := performTrialCall(globalAuth); err != nil {
+		t.Fatalf("performTrialCall returned transport error: %v", err)
+	}
+	restoreGlobal()
+	restoreCN := setBillingBase(srv.URL)
+	if _, err := performCheckinCall(cnAuth); err != nil {
+		t.Fatalf("performCheckinCall returned transport error: %v", err)
+	}
+	restoreCN()
+	if got := atomic.LoadInt32(&trialCalls); got != 1 {
+		t.Fatalf("trial POST count after transport failure = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&checkinCalls); got != 1 {
+		t.Fatalf("check-in POST count after transport failure = %d, want 1", got)
+	}
+}
+
 func TestIsTransientBillingErr(t *testing.T) {
 	tests := []struct {
 		err  error
@@ -121,6 +169,7 @@ func TestIsTransientBillingErr(t *testing.T) {
 		{nil, false},
 		{errors.New("http 500 from /v2/billing: internal"), true},
 		{errors.New("http 503 from /v2/billing: unavailable"), true},
+		{errors.New("dial tcp: connection reset by peer"), false},
 		{errors.New("code=10000 msg=API request failed"), false}, // business code, not transient
 		{errors.New("parse failed: unexpected EOF"), false},
 	}
