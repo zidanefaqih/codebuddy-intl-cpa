@@ -43,6 +43,31 @@ func decodeParseAuth(t *testing.T, raw []byte) pluginapi.AuthParseResponse {
 	return resp
 }
 
+func TestHandleParseAuth_PreservesUnknownStorageFields(t *testing.T) {
+	uid := "raw-fields-user"
+	raw := []byte(`{"type":"workbuddy","disabled":true,"note":"keep","host_field":{"source":"cpa"},"auth":{"accessToken":"at","refreshToken":"rt","domain":"www.codebuddy.cn","providerFlag":"preserve"},"account":{"uid":"` + uid + `","nickname":"nick","accountFlag":"preserve"}}`)
+	req := pluginapi.AuthParseRequest{Provider: providerName, FileName: "workbuddy-" + uid + ".json", RawJSON: raw}
+	body, _ := json.Marshal(req)
+	out, err := handleParseAuth(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := decodeParseAuth(t, out)
+	var doc map[string]any
+	if err := json.Unmarshal(resp.Auth.StorageJSON, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["disabled"] != true || doc["note"] != "keep" || doc["host_field"].(map[string]any)["source"] != "cpa" {
+		t.Fatalf("top-level fields lost: %#v", doc)
+	}
+	if doc["auth"].(map[string]any)["providerFlag"] != "preserve" {
+		t.Fatalf("nested auth field lost: %#v", doc["auth"])
+	}
+	if doc["account"].(map[string]any)["accountFlag"] != "preserve" {
+		t.Fatalf("nested account field lost: %#v", doc["account"])
+	}
+}
+
 func TestHandleParseAuth_EchoesFileNameAndEmptyID(t *testing.T) {
 	uid := "00e26541-1884-4916-9c26-253a325d64ac"
 	req := pluginapi.AuthParseRequest{
@@ -111,12 +136,44 @@ func TestHandleParseAuth_UnhandledForNonWorkbuddy(t *testing.T) {
 	}
 }
 
+func TestHandleParseAuth_LegacyWithoutType(t *testing.T) {
+	req := pluginapi.AuthParseRequest{
+		FileName: "workbuddy.json",
+		RawJSON:  []byte(`{"accessToken":"at","refreshToken":"rt","domain":"www.codebuddy.cn","uid":"u1"}`),
+	}
+	body, _ := json.Marshal(req)
+	out, err := handleParseAuth(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := decodeParseAuth(t, out)
+	if !resp.Handled || resp.Auth.FileName != "workbuddy.json" {
+		t.Fatalf("legacy parse = %#v, want handled with original filename", resp)
+	}
+}
+
+func TestHandleParseAuth_RejectsMalformedWorkbuddyFilenameWithoutType(t *testing.T) {
+	req := pluginapi.AuthParseRequest{
+		FileName: "workbuddy-not-json.txt",
+		RawJSON:  []byte(`{"accessToken":"at","refreshToken":"rt","domain":"www.codebuddy.cn","uid":"u1"}`),
+	}
+	body, _ := json.Marshal(req)
+	out, err := handleParseAuth(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := decodeParseAuth(t, out)
+	if resp.Handled {
+		t.Fatal("malformed workbuddy filename must not be claimed")
+	}
+}
+
 func TestToAuthDataForRefresh_EmptyFileNameAndID(t *testing.T) {
 	sa := &storedAuth{
 		Auth:    storedTokens{AccessToken: "a", RefreshToken: "r", Domain: "www.codebuddy.cn"},
 		Account: storedAccount{UID: "u-1", Nickname: "n"},
 	}
-	ad := toAuthDataForRefresh(sa)
+	ad := toAuthDataForRefresh(sa, nil, false)
 	if ad.FileName != "" {
 		t.Fatalf("FileName=%q want empty", ad.FileName)
 	}

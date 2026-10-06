@@ -127,6 +127,29 @@ func testAuthEntry(idx, uid string, disabled bool) pluginapi.HostAuthFileEntry {
 	}
 }
 
+func TestFailoverCandidateKeepsRuntimeAndRecordIDs(t *testing.T) {
+	files := []pluginapi.HostAuthFileEntry{
+		testAuthEntry("runtime-1", "record-1", false),
+		testAuthEntry("runtime-2", "record-2", false),
+	}
+	creds := map[string]*storedAuth{
+		"runtime-1": {Auth: storedTokens{Domain: "https://www.codebuddy.ai"}, Account: storedAccount{UID: "uid-1"}},
+		"runtime-2": {Auth: storedTokens{Domain: "https://www.codebuddy.ai"}, Account: storedAccount{UID: "uid-2"}},
+	}
+	stubAuthSources(t, files, creds)
+	pool := buildFailoverPool("record-1")
+	cands := pool.ordered(nil)
+	if len(cands) != 2 {
+		t.Fatalf("candidates = %d, want 2", len(cands))
+	}
+	if cands[0].AuthID != "runtime-1" || cands[0].RecordID != "record-1" {
+		t.Fatalf("primary identity = %+v, want runtime-1/record-1", cands[0])
+	}
+	if !isGlobalDomain(cands[0].Auth.Auth.Domain) {
+		t.Fatal("URL-form Global domain must remain Global for failover")
+	}
+}
+
 func TestBuildFailoverPool_RoutedAndOthers(t *testing.T) {
 	files := []pluginapi.HostAuthFileEntry{
 		testAuthEntry("idx-1", "uid-1", false),
@@ -149,6 +172,24 @@ func TestBuildFailoverPool_RoutedAndOthers(t *testing.T) {
 	}
 }
 
+func TestBuildFailoverPool_RoutedCooldownIsNotSynthesized(t *testing.T) {
+	files := []pluginapi.HostAuthFileEntry{
+		testAuthEntry("idx-1", "uid-1", false),
+	}
+	creds := map[string]*storedAuth{
+		"idx-1": {Auth: storedTokens{Domain: "https://www.workbuddy.ai"}, Account: storedAccount{UID: "uid-1"}},
+	}
+	stubAuthSources(t, files, creds)
+
+	markAuthCooldown("idx-1", time.Now().Add(5*time.Minute))
+	defer resetAuthCooldown("idx-1")
+
+	pool := buildFailoverPool("uid-1")
+	if pool.Primary != nil {
+		t.Fatalf("cooldown routed account must stay excluded, primary = %+v", pool.Primary)
+	}
+}
+
 func TestBuildFailoverPool_SkipsCooldown(t *testing.T) {
 	files := []pluginapi.HostAuthFileEntry{
 		testAuthEntry("idx-1", "uid-1", false),
@@ -166,6 +207,38 @@ func TestBuildFailoverPool_SkipsCooldown(t *testing.T) {
 	pool := buildFailoverPool("uid-1")
 	if len(pool.Others) != 0 {
 		t.Fatalf("cooldown fallback must be excluded, others = %+v", pool.Others)
+	}
+}
+
+func TestBuildFailoverPool_SkipsUnresolvedPeerWhenRealmKnown(t *testing.T) {
+	files := []pluginapi.HostAuthFileEntry{
+		testAuthEntry("idx-global", "uid-global", false),
+		testAuthEntry("idx-unknown", "uid-unknown", false),
+	}
+	creds := map[string]*storedAuth{
+		"idx-global": {Auth: storedTokens{Domain: "https://www.workbuddy.ai"}, Account: storedAccount{UID: "uid-global"}},
+	}
+	stubAuthSources(t, files, creds)
+
+	pool := buildFailoverPool("uid-global")
+	if len(pool.Others) != 0 {
+		t.Fatalf("peer with unknown realm must not enter a known-realm pool: %+v", pool.Others)
+	}
+}
+
+func TestCandidateCooldownCoversAllHostIdentities(t *testing.T) {
+	cand := &failoverCandidate{
+		AuthID:   "runtime-1",
+		RecordID: "record-1",
+		Aliases:  []string{"workbuddy-user.json"},
+		Auth:     &storedAuth{Account: storedAccount{UID: "uid-1"}},
+	}
+	markCandidateCooldown(cand, time.Now().Add(5*time.Minute))
+	defer resetCandidateCooldown(cand)
+	for _, key := range []string{"runtime-1", "record-1", "uid-1", "workbuddy-user.json"} {
+		if !isAuthOnCooldown(key) {
+			t.Fatalf("candidate cooldown must cover %q", key)
+		}
 	}
 }
 

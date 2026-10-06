@@ -51,7 +51,6 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 		idx, _ := key.(string)
 		if _, ok := live[idx]; !ok {
 			accountCache.Delete(key)
-			checkinLocks.Delete(key)
 			lifecycleState.Delete(key)
 			return true
 		}

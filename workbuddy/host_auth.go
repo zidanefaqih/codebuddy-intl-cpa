@@ -30,32 +30,50 @@ func hostAuthList() ([]pluginapi.HostAuthFileEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	var env envelope
-	if err := json.Unmarshal(raw, &env); err != nil || !env.OK {
-		return nil, fmt.Errorf("host.auth.list: bad envelope")
+	result, err := hostBridgeUnwrap(raw, pluginabi.MethodHostAuthList)
+	if err != nil {
+		return nil, err
 	}
 	var resp rpcHostAuthListResponse
-	if err := json.Unmarshal(env.Result, &resp); err != nil {
-		return nil, err
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return nil, fmt.Errorf("%s: decode result: %w", pluginabi.MethodHostAuthList, err)
 	}
 	// Fresh slice — resp.Files[:0] would alias the RPC response's backing
 	// array (P1-3: fragile pattern, safe today but could break if resp is
 	// ever cached/reused).
 	//
-	// Filter by filename prefix, NOT by Type/Provider: many existing auth
-	// files on disk don't carry a "type"/"provider" field (they were written
-	// before that convention), and EqualFold("", providerName) returns false
-	// for them — meaning we'd incorrectly exclude files that have the
-	// workbuddy- prefix but no type field. Filename prefix is the only
-	// reliable cross-version discriminator.
+	// Filter by filename, NOT by Type/Provider: many existing auth files on
+	// disk don't carry a "type"/"provider" field (they were written before
+	// that convention). Include the historical bare workbuddy.json too; it is
+	// still a valid single-account credential and must not disappear from
+	// scheduling, keepalive, lifecycle, or the panel.
 	out := make([]pluginapi.HostAuthFileEntry, 0, len(resp.Files))
-	prefix := providerName + "-"
 	for _, f := range resp.Files {
-		if strings.HasPrefix(strings.ToLower(f.Name), prefix) {
+		if isWorkbuddyAuthName(f.Name) {
 			out = append(out, f)
 		}
 	}
 	return out, nil
+}
+
+// authIDForIndex returns the core record ID for a runtime auth index. The
+// scheduler and auth-refresh callback use different identities, so mutation
+// paths that start from auth_index should resolve the record ID when possible.
+func authIDForIndex(authIndex string) string {
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		return ""
+	}
+	files, err := hostAuthList()
+	if err != nil {
+		return ""
+	}
+	for _, f := range files {
+		if f.AuthIndex == authIndex {
+			return strings.TrimSpace(f.ID)
+		}
+	}
+	return ""
 }
 
 // hostAuthGet fetches the credential JSON for one auth index.

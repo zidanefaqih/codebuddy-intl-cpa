@@ -102,6 +102,12 @@ func refreshCall(sa *storedAuth) (json.RawMessage, []byte, int, error) {
 // refreshOneAuth refreshes the access token for a single workbuddy auth and
 // persists the result. Returns a short status string for logging/tests.
 func refreshOneAuth(authIndex, authID string) (string, error) {
+	// Keep token refresh, lifecycle writes, check-in, and daily bonus from
+	// reading/saving the same account concurrently. A stale save can otherwise
+	// restore an old access token or undo disabled/note metadata.
+	unlock := lockAuthMutation(authIndex, authID)
+	defer unlock()
+
 	sa, err := hostAuthGet(authIndex)
 	if err != nil {
 		return "error", fmt.Errorf("get auth: %w", err)
@@ -117,7 +123,7 @@ func refreshOneAuth(authIndex, authID string) (string, error) {
 			// Upstream killed the offline session: refresh token is dead and
 			// every API call for this account will 401. Flag disabled so the
 			// scheduler stops routing traffic to it until manual re-login.
-			if derr := markSessionDead(authIndex, authID, sa); derr != nil {
+			if derr := markSessionDeadLocked(authIndex, sa); derr != nil {
 				return "session-dead", fmt.Errorf("session dead; flag failed: %v", derr)
 			}
 			return "session-dead", fmt.Errorf("session dead (12153): flagged disabled")
@@ -158,7 +164,7 @@ func persistAuthTokens(authIndex string, sa *storedAuth) error {
 	if name == "" {
 		name = authFileNameFor(sa)
 	}
-	raw, err := json.Marshal(sa)
+	raw, err := mergeAuthStorageJSON(phys.JSON, sa)
 	if err != nil {
 		return err
 	}
@@ -170,6 +176,15 @@ func persistAuthTokens(authIndex string, sa *storedAuth) error {
 // the reason so the panel can surface "session dead, re-login required"
 // without needing a custom [SESSION-DEAD] marker.
 func markSessionDead(authIndex, authID string, sa *storedAuth) error {
+	unlock := lockAuthMutation(authIndex, authID)
+	defer unlock()
+	return markSessionDeadLocked(authIndex, sa)
+}
+
+// markSessionDeadLocked is called by refreshOneAuth while the account mutation
+// lock is already held. Keeping the physical read/save here avoids a nested
+// acquisition of the non-reentrant account mutex.
+func markSessionDeadLocked(authIndex string, sa *storedAuth) error {
 	phys, err := hostAuthGetPhysical(authIndex)
 	if err != nil {
 		return err
@@ -229,9 +244,9 @@ func getLastKeepalive() *keepaliveSummary {
 // runTokenKeepalive refreshes every workbuddy auth once. Returns the summary.
 func runTokenKeepalive() *keepaliveSummary {
 	sum := &keepaliveSummary{When: time.Now()}
-	if !keepaliveEnabled() {
-		return sum
-	}
+	// The scheduler checks keepaliveEnabled before calling this function. Keep
+	// the function itself ungated so manual management calls always honor their
+	// explicit request even when automatic keepalive is disabled.
 	files, err := hostAuthList()
 	if err != nil {
 		sum.Results = append(sum.Results, keepaliveRow{Status: "error", Detail: err.Error()})
@@ -316,8 +331,9 @@ func handleKeepaliveNow(req pluginapi.ManagementRequest) map[string]any {
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
+	authID := authIDForIndex(authIndex)
 	row := keepaliveRow{AuthIndex: authIndex, Nickname: sa.Account.Nickname, Region: accountRegion(sa)}
-	row.Status, err = refreshOneAuth(authIndex, "")
+	row.Status, err = refreshOneAuth(authIndex, authID)
 	if err != nil {
 		row.Detail = truncateRedacted(err.Error(), 200)
 	}

@@ -84,7 +84,8 @@ const (
 	// CN chat/auth gateway (iss = codebuddy.cn realm).
 	upstreamBaseCN = "https://copilot.tencent.com"
 	// Global chat/auth gateway (iss = workbuddy.ai realm). APISIX on
-	// copilot.tencent.com rejects Global JWTs with 401; must use workbuddy.ai.
+	// copilot.tencent.com rejects Global JWTs with 401; use the verified
+	// codebuddy.ai gateway for both Global issuer variants.
 	upstreamBaseGlobal  = "https://www.codebuddy.ai"
 	clientUA            = "CLI/2.63.2 CodeBuddy/2.63.2"
 	originReferer       = "https://www.codebuddy.cn"
@@ -330,7 +331,9 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.8.2"
+// Keep the fallback aligned with VERSION so a plain `go build` does not report
+// a stale plugin version.
+var version = "0.9.2"
 
 func wbRegistration() registration {
 	return registration{
@@ -373,10 +376,14 @@ func wbRegistration() registration {
 // upstream call per account.
 const dynamicModelsCacheTTL = 5 * time.Minute
 
-var dynamicModelsCache struct {
-	sync.RWMutex
+type dynamicModelsCacheEntry struct {
 	models  []pluginapi.ModelInfo
 	fetched time.Time
+}
+
+var dynamicModelsCache struct {
+	sync.RWMutex
+	byKey map[string]dynamicModelsCacheEntry
 }
 
 //
@@ -414,6 +421,11 @@ var modelAliasCache struct {
 type storedAuth struct {
 	Auth    storedTokens  `json:"auth"`
 	Account storedAccount `json:"account"`
+
+	// rawJSON keeps provider fields that this plugin does not model yet. It is
+	// intentionally excluded from JSON marshaling; persistence helpers overlay
+	// the typed token/account fields onto this source document explicitly.
+	rawJSON []byte
 }
 
 type storedTokens struct {
@@ -490,6 +502,9 @@ func parseStored(raw []byte) (*storedAuth, error) {
 	if sa.Auth.AccessToken == "" {
 		return nil, fmt.Errorf("parse_error: missing accessToken")
 	}
+	// Keep the original document so AuthData and later import/refresh saves do
+	// not discard provider-specific fields unknown to storedAuth.
+	sa.rawJSON = append([]byte(nil), raw...)
 	return &sa, nil
 }
 
@@ -662,8 +677,7 @@ func handleParseAuth(raw []byte) ([]byte, error) {
 	}
 	if declared == "" {
 		routed := strings.EqualFold(strings.TrimSpace(req.Provider), providerName)
-		prefixed := strings.HasPrefix(strings.ToLower(strings.TrimSpace(req.FileName)), providerName+"-")
-		if !routed && !prefixed {
+		if !routed && !isWorkbuddyAuthName(req.FileName) {
 			return okEnvelope(pluginapi.AuthParseResponse{Handled: false})
 		}
 	}
@@ -682,7 +696,8 @@ func handleParseAuth(raw []byte) ([]byte, error) {
 	// By leaving ID empty, CPA falls back to authIDForPath(path) which
 	// derives ID from the file path → always matches the watcher's key.
 	// FileName is also echoed back to avoid rename-based duplicates.
-	ad := toAuthDataOpts(sa, nil, false)
+	disabled := parseDisabledFromAuthJSON(req.RawJSON)
+	ad := toAuthDataWithMetadata(sa, authMetadataFromJSON(req.RawJSON), disabled)
 	ad.ID = "" // let host compute from path (prevents ID mismatch dupes)
 	if fn := strings.TrimSpace(req.FileName); fn != "" {
 		ad.FileName = fn
@@ -697,9 +712,15 @@ func toAuthData(sa *storedAuth) pluginapi.AuthData {
 	return toAuthDataOpts(sa, nil, false)
 }
 
+func toAuthDataWithMetadata(sa *storedAuth, existing map[string]any, disabled bool) pluginapi.AuthData {
+	ad := toAuthDataOpts(sa, nil, disabled)
+	ad.Metadata = mergeAuthMetadata(sa, existing, disabled)
+	return ad
+}
+
 // toAuthDataOpts builds AuthData with optional credits snapshot and disabled flag.
 func toAuthDataOpts(sa *storedAuth, cr *creditsSummary, disabled bool) pluginapi.AuthData {
-	storage, _ := json.Marshal(sa)
+	storage := storageJSONForAuth(sa)
 	id := providerName
 	fileName := authFileName
 	if sa != nil {
@@ -752,7 +773,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	// same request is retried on the next eligible enabled account. One usage
 	// record per inbound request (success or final failure); the CPAMP publish
 	// follows the same single-line rule.
-	pool := buildFailoverPool(req.AuthID)
+	pool := buildFailoverPool(req.AuthID, req.StorageJSON)
 	cands := pool.ordered(req.StorageJSON)
 	var completion []byte
 	fin := runFailover(cands, func(cand *failoverCandidate) (attemptOutcome, int, string, error) {
@@ -762,17 +783,19 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	})
 	switch fin.Outcome {
 	case outcomeSuccess:
-		uid := candUID(findCandidate(cands, fin.AuthID), authUID)
-		publishUsage(req.Model, upstreamModel, uid, started, usageDetailFromCompletion(completion), false, 0, "")
-		recordUsageMap(req.Model, upstreamModel, req.AuthID, authUID, started, usageMapFromCompletion(completion), false)
-		onFailoverSuccess(req.AuthID, fin.AuthID, authUID)
+		answered := findCandidate(cands, fin.AuthID)
+		usageAuthID := fin.AuthID
+		usageUID := candUID(answered, authUID)
+		publishUsage(req.Model, upstreamModel, usageAuthID, started, usageDetailFromCompletion(completion), false, 0, "")
+		recordUsageMap(req.Model, upstreamModel, usageAuthID, usageUID, started, usageMapFromCompletion(completion), false)
+		onFailoverSuccess(req.AuthID, fin.AuthID, candRecordID(answered, fin.AuthID), authUID)
 		return okEnvelope(pluginapi.ExecutorResponse{Payload: completion})
 	default:
 		// outcomeStop (transport/business) keeps the legacy reconcile path for
 		// hard errors; pure rate-limit exhaustion records one failed line and
 		// returns the last upstream error. Failures keep the routed account's
 		// identity in usage (matches pre-failover behavior).
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, fin.Status, fin.Body)
+		publishUsage(req.Model, upstreamModel, req.AuthID, started, usage.Detail{}, true, fin.Status, fin.Body)
 		recordUsageMap(req.Model, upstreamModel, req.AuthID, authUID, started, nil, true)
 		if fin.Status > 0 && !isRateLimitResponse(fin.Status, fin.Body) {
 			reconcileAfterExecutorError(req.AuthID, fin.Status, fin.Body)
@@ -819,7 +842,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 
 	// No async stream id → fall back to synchronous chunk collection.
 	if req.StreamID == "" {
-		pool := buildFailoverPool(req.AuthID)
+		pool := buildFailoverPool(req.AuthID, req.StorageJSON)
 		cands := pool.ordered(req.StorageJSON)
 		collector := &sseUsageCollector{}
 		var chunks []pluginapi.ExecutorStreamChunk
@@ -847,19 +870,25 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		})
 		switch fin.Outcome {
 		case outcomeSuccess:
-			publishUsage(req.Model, upstreamModel, candUID(findCandidate(cands, fin.AuthID), authUID), started, collector.detail(), false, 0, "")
-			recordUsageMap(req.Model, upstreamModel, req.AuthID, authUID, started, collector.lastMap(), false)
-			onFailoverSuccess(req.AuthID, fin.AuthID, authUID)
+			answered := findCandidate(cands, fin.AuthID)
+			usageAuthID := fin.AuthID
+			usageUID := candUID(answered, authUID)
+			publishUsage(req.Model, upstreamModel, usageAuthID, started, collector.detail(), false, 0, "")
+			recordUsageMap(req.Model, upstreamModel, usageAuthID, usageUID, started, collector.lastMap(), false)
+			onFailoverSuccess(req.AuthID, fin.AuthID, candRecordID(answered, fin.AuthID), authUID)
 			return okEnvelope(streamResponse{Headers: headers, Chunks: chunks})
 		default:
 			if partial {
 				// Partial chunks were already collected before the read error —
 				// hand them to the host and let it close the stream.
-				publishUsage(req.Model, upstreamModel, authUID, started, collector.detail(), true, fin.Status, fin.Body)
-				recordUsageMap(req.Model, upstreamModel, req.AuthID, authUID, started, collector.lastMap(), true)
+				answered := findCandidate(cands, fin.AuthID)
+				usageAuthID := fin.AuthID
+				usageUID := candUID(answered, authUID)
+				publishUsage(req.Model, upstreamModel, usageAuthID, started, collector.detail(), true, fin.Status, fin.Body)
+				recordUsageMap(req.Model, upstreamModel, usageAuthID, usageUID, started, collector.lastMap(), true)
 				return okEnvelope(streamResponse{Headers: headers, Chunks: chunks})
 			}
-			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, fin.Status, fin.Body)
+			publishUsage(req.Model, upstreamModel, req.AuthID, started, usage.Detail{}, true, fin.Status, fin.Body)
 			recordUsageMap(req.Model, upstreamModel, req.AuthID, authUID, started, collector.lastMap(), true)
 			if fin.Status > 0 && !isRateLimitResponse(fin.Status, fin.Body) {
 				reconcileAfterExecutorError(req.AuthID, fin.Status, fin.Body)
@@ -877,7 +906,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	// client disconnects — otherwise the pump keeps reading a dead upstream until
 	// sharedHTTPClient's 120s timeout, holding a pool slot the whole time.
 	ctx, cancel := context.WithCancel(context.Background())
-	pool := buildFailoverPool(req.AuthID)
+	pool := buildFailoverPool(req.AuthID, req.StorageJSON)
 	cands := pool.ordered(req.StorageJSON)
 	go pumpWithFailover(ctx, cancel, req, body, upstreamModel, authUID, started, sseFramed, cands)
 	return okEnvelope(streamResponse{Headers: headers})
@@ -921,9 +950,9 @@ func collectStreamAttempt(body []byte, cand *failoverCandidate, sseFramed bool, 
 // chat. When the answering account differs from the routed one the active
 // panel selection follows it so subsequent scheduler.pick calls stay on the
 // healthy account.
-func onFailoverSuccess(routedAuthID, attemptAuthID, authUID string) {
-	if attemptAuthID != "" && attemptAuthID != routedAuthID {
-		setActiveAuthID(attemptAuthID)
+func onFailoverSuccess(routedAuthID, attemptAuthID, attemptRecordID, authUID string) {
+	if attemptRecordID != "" && attemptRecordID != routedAuthID {
+		setActiveAuthID(attemptRecordID)
 	}
 	// The answering account's own UID is the correct credits key.
 	fb, err := hostAuthGet(attemptAuthID)

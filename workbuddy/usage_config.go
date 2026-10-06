@@ -16,6 +16,19 @@ import (
 // check-in schedule: 09:00 and 21:00 local time.
 var checkinHours = []int{9, 21}
 
+// shouldRunCheckinNow reports whether now falls in a scheduled check-in
+// window. schedulerLoop wakes for other task families too, so it must not call
+// the CN check-in path on those unrelated ticks.
+func shouldRunCheckinNow(now time.Time) bool {
+	for _, h := range checkinHours {
+		t := time.Date(now.Year(), now.Month(), now.Day(), h, 0, 0, 0, now.Location())
+		if !now.Before(t) && now.Before(t.Add(time.Hour)) {
+			return true
+		}
+	}
+	return false
+}
+
 // plugin-level config decoded from plugin.register/reconfigure config_yaml.
 var (
 	checkinAuto   = true // enabled by default

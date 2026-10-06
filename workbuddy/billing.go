@@ -9,7 +9,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -18,8 +20,38 @@ import (
 // (Global) CodeBuddy service.  The CN service uses www.codebuddy.cn;
 // Global uses www.workbuddy.ai or www.codebuddy.ai.
 func isGlobalDomain(domain string) bool {
-	d := strings.ToLower(strings.TrimSpace(domain))
+	d := normalizeDomainHost(domain)
 	return d == "workbuddy.ai" || strings.HasSuffix(d, ".workbuddy.ai") || d == "codebuddy.ai" || strings.HasSuffix(d, ".codebuddy.ai")
+}
+
+// normalizeDomainHost accepts the shapes found in imported credentials:
+// hostname-only, URL with scheme, URL with a path, and host:port. Region
+// routing must use the parsed hostname, otherwise https://www.codebuddy.ai is
+// incorrectly classified as CN.
+func normalizeDomainHost(domain string) string {
+	d := strings.ToLower(strings.TrimSpace(domain))
+	if d == "" {
+		return ""
+	}
+	candidate := d
+	if !strings.Contains(candidate, "://") {
+		candidate = "//" + candidate
+	}
+	if u, err := url.Parse(candidate); err == nil {
+		if host := u.Hostname(); host != "" {
+			return strings.TrimSuffix(strings.ToLower(host), ".")
+		}
+	}
+	// Keep malformed legacy values conservative, but still handle a plain
+	// host:port without accepting arbitrary path substrings as a domain.
+	host := d
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if i := strings.IndexByte(host, '/'); i >= 0 {
+		host = host[:i]
+	}
+	return strings.TrimSuffix(strings.TrimSpace(host), ".")
 }
 
 // accountRegion returns "cn" or "global" based on the auth's domain field.
@@ -351,7 +383,10 @@ func fetchPaymentType(sa *storedAuth) string {
 }
 
 func performCheckinCall(sa *storedAuth) (map[string]any, error) {
-	data, err := billingCall(sa, "/v2/billing/meter/daily-checkin", nil)
+	// This POST mutates the account's daily state. A transport/5xx failure is
+	// ambiguous, so never replay it automatically; the next scheduled tick can
+	// safely probe and retry after the caller has stopped.
+	data, err := billingCallOnce(sa, "/v2/billing/meter/daily-checkin", nil)
 	if err != nil {
 		// billingCall returns business errors (code != 0) as Go errors; surface
 		// them as a structured result so the panel can show "already checked in".
@@ -374,7 +409,9 @@ func performCheckinCall(sa *storedAuth) (map[string]any, error) {
 // Pro Plan Trial".
 // Repeat call: code=14051 "has applied trial" — surfaced as already_claimed.
 func performTrialCall(sa *storedAuth) (map[string]any, error) {
-	data, err := billingCall(sa, "/billing/ide/trial", nil)
+	// Trial claim is a one-shot mutation. Do not replay a POST after an
+	// ambiguous upstream failure because the first request may have succeeded.
+	data, err := billingCallOnce(sa, "/billing/ide/trial", nil)
 	if err != nil {
 		msg := err.Error()
 		// code=14051 means the trial has already been claimed — not a real error.

@@ -62,16 +62,22 @@ func schedulerLoop(stop chan struct{}) {
 			timer.Stop()
 			return
 		case <-timer.C:
-			runAutoCheckin()
+			now := time.Now()
+			// The wake-up timer includes all schedule families. Only run each
+			// family inside its own one-hour window; otherwise daily-bonus slots
+			// would also trigger CN check-in and lifecycle work.
+			if shouldRunCheckinNow(now) {
+				runAutoCheckin()
+			}
 			// Fire keepalive if the current tick falls within its scheduled
 			// window (e.g. 22:00 keepalive fires on the 22:00 tick even though
 			// the previous checkin tick was 21:00).
-			if shouldRunKeepaliveNow(time.Now()) {
+			if shouldRunKeepaliveNow(now) && keepaliveEnabled() {
 				runTokenKeepalive()
 			}
 			// Same idea for the Global daily reward. It is idempotent per account
 			// per day, so extra slots only cost a heatmap read once the day is lit.
-			if shouldRunDailyBonusNow(time.Now()) {
+			if shouldRunDailyBonusNow(now) && dailyBonusEnabled() {
 				runDailyBonus()
 			}
 		}
@@ -118,66 +124,69 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 	// A-24: only fetch sa when needed (checkin). For lifecycle-only paths,
 	// let reconcileOneAccount do the single hostAuthGetBundle internally.
 	if doCheckin {
-		sa, err := hostAuthGet(f.AuthIndex)
-		if err != nil {
-			return
-		}
-		if isGlobalDomain(sa.Auth.Domain) {
-			// Global: never check-in or auto-claim trial. Lifecycle only.
-			// Invalidate cache (copy entry, set credits=nil, keep plan/checkin).
-			if v, ok := accountCache.Load(f.ID); ok {
-				if e, ok2 := v.(*accountCacheEntry); ok2 {
-					fresh := *e
-					fresh.credits = nil
-					fresh.fetched = time.Now()
-					accountCache.Store(f.ID, &fresh)
-				}
+		// Serialize the account read and check-in sequence with manual check-in,
+		// token refresh, and lifecycle writes. Release before reconcile because
+		// lifecycle mutation helpers acquire the same per-account lock.
+		unlock := lockAuthMutation(f.AuthIndex, f.ID)
+		var loaded bool
+		func() {
+			defer unlock()
+			sa, err := hostAuthGet(f.AuthIndex)
+			if err != nil {
+				return
 			}
-			if lifecycleEnabled() {
-				_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
-			}
-			return
-		}
-		// CN: daily check-in when enabled.
-		ci, err := fetchCheckinStatus(sa)
-		if err == nil && ci != nil && ci.Active && !ci.TodayCheckedIn {
-			if _, callErr := performCheckinCall(sa); callErr == nil {
-				// Refresh once after a successful checkin call so cache reflects
-				// the post-call state. If the status call fails keep the pre-call
-				// snapshot rather than dropping it (v0.6.31: avoid shadowing ci
-				// with a second fetch that could race with concurrent readers).
-				if ci2, _ := fetchCheckinStatus(sa); ci2 != nil {
-					ci = ci2
+			loaded = true
+			if isGlobalDomain(sa.Auth.Domain) {
+				// Global: never check-in or auto-claim trial. Lifecycle only.
+				// Invalidate cache (copy entry, set credits=nil, keep plan/checkin).
+				if v, ok := accountCache.Load(f.ID); ok {
+					if e, ok2 := v.(*accountCacheEntry); ok2 {
+						fresh := *e
+						fresh.credits = nil
+						fresh.fetched = time.Now()
+						accountCache.Store(f.ID, &fresh)
+					}
 				}
-				// P1-5: checkin grants new credits — refresh the credits cache
-				// immediately so the panel shows the updated balance without
-				// waiting for the async reconcile pass.
-				if cr2, crErr := fetchUserResource(sa); crErr == nil && cr2 != nil {
-					if v, ok := accountCache.Load(f.ID); ok {
-						if prev, ok2 := v.(*accountCacheEntry); ok2 {
-							fresh := *prev
-							fresh.credits = cr2
-							fresh.fetched = time.Now()
-							accountCache.Store(f.ID, &fresh)
+				return
+			}
+			// CN: daily check-in when enabled.
+			ci, err := fetchCheckinStatus(sa)
+			if err == nil && ci != nil && ci.Active && !ci.TodayCheckedIn {
+				if _, callErr := performCheckinCall(sa); callErr == nil {
+					// Refresh once after a successful checkin call so cache reflects
+					// the post-call state. If the status call fails keep the pre-call
+					// snapshot rather than dropping it.
+					if ci2, _ := fetchCheckinStatus(sa); ci2 != nil {
+						ci = ci2
+					}
+					// Check-in grants credits; refresh the cache immediately.
+					if cr2, crErr := fetchUserResource(sa); crErr == nil && cr2 != nil {
+						if v, ok := accountCache.Load(f.ID); ok {
+							if prev, ok2 := v.(*accountCacheEntry); ok2 {
+								fresh := *prev
+								fresh.credits = cr2
+								fresh.fetched = time.Now()
+								accountCache.Store(f.ID, &fresh)
+							}
 						}
 					}
 				}
 			}
-		}
-		// Refresh cache with latest checkin status (merge, don't wipe credits/plan).
-		if ci != nil {
-			var prev *accountCacheEntry
-			if v, ok := accountCache.Load(f.ID); ok {
-				prev, _ = v.(*accountCacheEntry)
+			// Refresh cache with latest checkin status (merge, don't wipe credits/plan).
+			if ci != nil {
+				var prev *accountCacheEntry
+				if v, ok := accountCache.Load(f.ID); ok {
+					prev, _ = v.(*accountCacheEntry)
+				}
+				entry := &accountCacheEntry{checkin: ci, fetched: time.Now()}
+				if prev != nil {
+					entry.credits = prev.credits
+					entry.plan = prev.plan
+				}
+				accountCache.Store(f.ID, entry)
 			}
-			entry := &accountCacheEntry{checkin: ci, fetched: time.Now()}
-			if prev != nil {
-				entry.credits = prev.credits
-				entry.plan = prev.plan
-			}
-			accountCache.Store(f.ID, entry)
-		}
-		if lifecycleEnabled() {
+		}()
+		if loaded && lifecycleEnabled() {
 			_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
 		}
 		return
@@ -288,6 +297,8 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 // merge into the previous entry so credits/plan survive.
 func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 	out := map[string]any{"auth_index": f.AuthIndex}
+	unlock := lockAuthMutation(f.AuthIndex, f.ID)
+	defer unlock()
 
 	sa, err := hostAuthGet(f.AuthIndex)
 	if err != nil {
@@ -303,10 +314,6 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 		out["message"] = "国际版账号不支持签到，请使用领取专家加油包"
 		return out
 	}
-
-	mu := checkinLockFor(f.AuthIndex)
-	mu.Lock()
-	defer mu.Unlock()
 
 	// Status probe: a failure here is NOT fatal — the check-in call below is
 	// idempotent upstream and its business message tells us "already" anyway.
@@ -367,29 +374,22 @@ func mergeCheckinCache(authID string, ci *checkinSummary) {
 	accountCache.Store(authID, entry)
 }
 
-func checkinLockFor(authIndex string) *sync.Mutex {
-	v, _ := checkinLocks.LoadOrStore(authIndex, &sync.Mutex{})
-	return v.(*sync.Mutex)
-}
-
-// pruneCheckinLocks removes lock entries for auth indices that no longer
-// exist in hostAuthList. Call after dashboard prune.
-// Lock keys are auth_index (used for host RPC), so live map needs auth_index too.
+// pruneCheckinLocks removes idle lock entries for accounts no longer known to
+// the host. The registry itself keeps entries that are held or awaited, so a
+// prune cannot create a second mutex for an account currently in use.
 func pruneCheckinLocks() {
 	files, err := hostAuthList()
 	if err != nil {
 		return
 	}
-	live := make(map[string]struct{}, len(files))
+	live := make(map[string]struct{}, len(files)*2)
 	for _, f := range files {
 		live[f.ID] = struct{}{}
-		live[f.AuthIndex] = struct{}{} // checkinLockFor uses auth_index as key
-	}
-	checkinLocks.Range(func(key, _ any) bool {
-		idx, _ := key.(string)
-		if _, ok := live[idx]; !ok {
-			checkinLocks.Delete(key)
+		live[f.AuthIndex] = struct{}{}
+		live[f.Name] = struct{}{}
+		if uid := authUIDFromFilename(f.Name); uid != "" {
+			live[uid] = struct{}{}
 		}
-		return true
-	})
+	}
+	pruneAuthMutationLocks(live)
 }

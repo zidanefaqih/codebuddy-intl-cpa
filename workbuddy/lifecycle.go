@@ -69,9 +69,8 @@ func pruneLifecycleState() {
 
 // disableAuth writes disabled:true for a CN (or fallback) account.
 func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, reason string) error {
-	mu := checkinLockFor(authIndex)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := lockAuthMutation(authIndex, authID)
+	defer unlock()
 
 	note := displayNote(sa, cr, true)
 	if reason != "" && !strings.Contains(note, reason) {
@@ -83,9 +82,14 @@ func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, r
 	if lifecycleStateUnchanged(authID, true, note) {
 		return nil
 	}
-	// Prefer live physical file to preserve any extra fields if present.
+	// Prefer live physical file to preserve any extra fields if present. A
+	// failed physical read is not safe to treat as an empty file: saving the
+	// caller snapshot could overwrite newer tokens or host metadata.
 	phys, err := hostAuthGetPhysical(authIndex)
-	if err == nil && parseDisabledFromAuthJSON(phys.JSON) {
+	if err != nil {
+		return fmt.Errorf("get physical auth: %w", err)
+	}
+	if parseDisabledFromAuthJSON(phys.JSON) {
 		// already disabled; still refresh note if needed
 		if lifecycleStateUnchanged(authID, true, note) {
 			return nil
@@ -97,7 +101,12 @@ func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, r
 	if phys != nil {
 		name, path, legacyPath = resolveAuthFileTarget(sa, phys)
 	}
-	raw, err := buildAuthFileJSON(sa, true, note, nil)
+	var raw []byte
+	if phys != nil {
+		raw, err = buildAuthFileJSONPreserving(phys, sa, true, note, nil)
+	} else {
+		raw, err = buildAuthFileJSON(sa, true, note, nil)
+	}
 	if err != nil {
 		return err
 	}
@@ -111,9 +120,8 @@ func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, r
 
 // reenableAuth writes disabled:false when CN has credits again.
 func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary) error {
-	mu := checkinLockFor(authIndex)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := lockAuthMutation(authIndex, authID)
+	defer unlock()
 
 	if !shouldReenableCN(true, cr) {
 		return nil
@@ -123,13 +131,16 @@ func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary) 
 		return nil
 	}
 	phys, err := hostAuthGetPhysical(authIndex)
-	name := authFileNameFor(sa)
-	path := ""
-	legacyPath := ""
-	if err == nil {
-		name, path, legacyPath = resolveAuthFileTarget(sa, phys)
+	if err != nil {
+		return fmt.Errorf("get physical auth: %w", err)
 	}
-	raw, err := buildAuthFileJSON(sa, false, note, nil)
+	name, path, legacyPath := resolveAuthFileTarget(sa, phys)
+	var raw []byte
+	if phys != nil {
+		raw, err = buildAuthFileJSONPreserving(phys, sa, false, note, nil)
+	} else {
+		raw, err = buildAuthFileJSON(sa, false, note, nil)
+	}
 	if err != nil {
 		return err
 	}
@@ -143,9 +154,8 @@ func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary) 
 
 // deleteAuth removes Global exhausted credentials from disk.
 func deleteAuth(authIndex, authID string, sa *storedAuth) error {
-	mu := checkinLockFor(authIndex)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := lockAuthMutation(authIndex, authID)
+	defer unlock()
 
 	phys, err := hostAuthGetPhysical(authIndex)
 	if err != nil {
@@ -170,7 +180,13 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 	if path == "" {
 		// Last resort: disable instead of silent no-op (never invent a random path).
 		note := displayNote(sa, nil, true) + " · 应删除但无 path"
-		raw, berr := buildAuthFileJSON(sa, true, note, nil)
+		var raw []byte
+		var berr error
+		if phys != nil {
+			raw, berr = buildAuthFileJSONPreserving(phys, sa, true, note, nil)
+		} else {
+			raw, berr = buildAuthFileJSON(sa, true, note, nil)
+		}
 		if berr != nil {
 			return fmt.Errorf("no path and build failed: %w", berr)
 		}
@@ -246,23 +262,25 @@ func syncAuthNote(authIndex, authID string, sa *storedAuth, cr *creditsSummary, 
 	if lifecycleStateUnchanged(authID, disabled, note) {
 		return nil
 	}
-	mu := checkinLockFor(authIndex)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := lockAuthMutation(authIndex, authID)
+	defer unlock()
 	phys, err := hostAuthGetPhysical(authIndex)
-	name := authFileNameFor(sa)
-	path := ""
-	legacyPath := ""
-	if err == nil {
-		name, path, legacyPath = resolveAuthFileTarget(sa, phys)
-		// re-read disabled from disk as source of truth
-		disabled = parseDisabledFromAuthJSON(phys.JSON)
-		note = displayNote(sa, cr, disabled)
+	if err != nil {
+		return fmt.Errorf("get physical auth: %w", err)
 	}
+	name, path, legacyPath := resolveAuthFileTarget(sa, phys)
+	// Re-read disabled from disk as source of truth.
+	disabled = parseDisabledFromAuthJSON(phys.JSON)
+	note = displayNote(sa, cr, disabled)
 	if lifecycleStateUnchanged(authID, disabled, note) {
 		return nil
 	}
-	raw, err := buildAuthFileJSON(sa, disabled, note, nil)
+	var raw []byte
+	if phys != nil {
+		raw, err = buildAuthFileJSONPreserving(phys, sa, disabled, note, nil)
+	} else {
+		raw, err = buildAuthFileJSON(sa, disabled, note, nil)
+	}
 	if err != nil {
 		return err
 	}

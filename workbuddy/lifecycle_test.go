@@ -121,6 +121,75 @@ func TestDisplayNote(t *testing.T) {
 	}
 }
 
+func TestMergeAuthStorageJSON_PreservesMetadataAndNestedUnknownFields(t *testing.T) {
+	current := []byte(`{"type":"workbuddy","provider":"workbuddy","disabled":true,"note":"keep me","custom":{"source":"host"},"auth":{"accessToken":"old","refreshToken":"old-rt","domain":"www.codebuddy.cn","upstreamFlag":true},"account":{"uid":"old-u","nickname":"old","accountFlag":"keep"}}`)
+	sa := &storedAuth{Auth: storedTokens{AccessToken: "new", RefreshToken: "new-rt", ExpiresAt: 42, Domain: "www.workbuddy.ai"}, Account: storedAccount{UID: "new-u", Nickname: "new"}}
+	raw, err := mergeAuthStorageJSON(current, sa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["disabled"] != true || doc["note"] != "keep me" || doc["custom"].(map[string]any)["source"] != "host" {
+		t.Fatalf("top-level metadata lost: %#v", doc)
+	}
+	auth := doc["auth"].(map[string]any)
+	if auth["accessToken"] != "new" || auth["upstreamFlag"] != true {
+		t.Fatalf("auth merge = %#v", auth)
+	}
+	account := doc["account"].(map[string]any)
+	if account["uid"] != "new-u" || account["accountFlag"] != "keep" {
+		t.Fatalf("account merge = %#v", account)
+	}
+}
+
+func TestMergeAuthStorageJSON_PreservesFlatLegacyShape(t *testing.T) {
+	current := []byte(`{"type":"workbuddy","disabled":true,"note":"legacy","accessToken":"old","refreshToken":"old-rt","uid":"old-u","custom":"keep"}`)
+	sa := &storedAuth{Auth: storedTokens{AccessToken: "new", RefreshToken: "new-rt", ExpiresAt: 42, Domain: "www.codebuddy.cn"}, Account: storedAccount{UID: "new-u", Nickname: "new"}}
+	raw, err := mergeAuthStorageJSON(current, sa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, nested := doc["auth"]; nested {
+		t.Fatalf("legacy flat shape became nested: %#v", doc)
+	}
+	if doc["accessToken"] != "new" || doc["uid"] != "new-u" || doc["disabled"] != true || doc["custom"] != "keep" {
+		t.Fatalf("flat merge = %#v", doc)
+	}
+}
+
+func TestMergeAuthStorageJSON_NestedSourceCanonicalizesLegacyTarget(t *testing.T) {
+	current := []byte(`{"type":"workbuddy","disabled":true,"note":"legacy","accessToken":"old","uid":"old-u","custom":"keep"}`)
+	source := []byte(`{"type":"workbuddy","auth":{"accessToken":"new","refreshToken":"rt","domain":"www.codebuddy.cn","providerFlag":"keep"},"account":{"uid":"new-u","nickname":"new","accountFlag":"keep"}}`)
+	sa, err := parseStored(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := mergeAuthStorageJSON(current, sa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, flat := doc["accessToken"]; flat {
+		t.Fatalf("flat access token was not removed: %#v", doc)
+	}
+	if doc["custom"] != "keep" || doc["disabled"] != true || doc["note"] != "legacy" {
+		t.Fatalf("host metadata lost: %#v", doc)
+	}
+	if doc["auth"].(map[string]any)["providerFlag"] != "keep" || doc["account"].(map[string]any)["accountFlag"] != "keep" {
+		t.Fatalf("nested source fields lost: %#v", doc)
+	}
+}
+
 func TestBuildAuthFileJSON_ContainsDisabledAndNote(t *testing.T) {
 	sa := &storedAuth{
 		Auth:    storedTokens{AccessToken: "at", RefreshToken: "rt", Domain: "www.codebuddy.cn"},

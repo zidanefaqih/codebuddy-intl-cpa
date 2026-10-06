@@ -22,8 +22,13 @@ import (
 
 // failoverCandidate is one eligible account.
 type failoverCandidate struct {
+	// AuthID is the runtime auth_index used by host.auth.get.
 	AuthID string
-	Auth   *storedAuth
+	// RecordID is the core auth.ID used by scheduler/panel selection.
+	RecordID string
+	// Aliases are other host-list identities, such as the physical filename.
+	Aliases []string
+	Auth    *storedAuth
 }
 
 // failoverPool is a single-request snapshot of the eligible accounts.
@@ -81,25 +86,63 @@ func listAuthEntryDisabled(f pluginapi.HostAuthFileEntry) bool {
 // workbuddy account the host knows about. Candidates flagged disabled or
 // currently on rate-limit cooldown are excluded. When the host list is
 // unavailable (tests / bridge down) the pool contains only the routed auth.
-func buildFailoverPool(routedAuthID string) *failoverPool {
+// primaryStorage is optional and preserves the routed realm when the host
+// cannot resolve the routed record temporarily.
+func buildFailoverPool(routedAuthID string, primaryStorage ...[]byte) *failoverPool {
 	pool := &failoverPool{}
 	files, err := loadAuthList()
 	if err != nil {
-		pool.Primary = &failoverCandidate{AuthID: routedAuthID}
+		primary := &failoverCandidate{AuthID: routedAuthID, RecordID: routedAuthID}
+		if len(primaryStorage) > 0 && len(primaryStorage[0]) > 0 {
+			if sa, parseErr := parseStored(primaryStorage[0]); parseErr == nil {
+				primary.Auth = sa
+				primary.Aliases = []string{authFileNameFor(sa)}
+			}
+		}
+		if !candidateOnCooldown(primary) {
+			pool.Primary = primary
+		}
 		return pool
 	}
 	wantName := ""
 	if routedAuthID != "" {
 		wantName = "workbuddy-" + routedAuthID + ".json"
 	}
+	// A request is bound to one realm. Retrying a Global request with a CN
+	// credential (or the reverse) cannot succeed and may expose a request to the
+	// wrong account pool. Resolve the routed storage first and keep only peers
+	// from the same CN/Global realm.
+	var routedAuth *storedAuth
+	routedMatched := false
+	for _, f := range files {
+		if f.AuthIndex == routedAuthID || f.ID == routedAuthID || f.Name == routedAuthID || listEntryMatchesUID(f, routedAuthID, wantName) {
+			routedMatched = true
+			if sa, getErr := authGetSource(f.AuthIndex); getErr == nil {
+				routedAuth = sa
+			}
+			break
+		}
+	}
+	if routedAuth == nil && routedAuthID != "" {
+		if sa, getErr := authGetSource(routedAuthID); getErr == nil {
+			routedAuth = sa
+		}
+	}
+	if routedAuth == nil && len(primaryStorage) > 0 && len(primaryStorage[0]) > 0 {
+		if sa, parseErr := parseStored(primaryStorage[0]); parseErr == nil {
+			routedAuth = sa
+		}
+	}
+	routedRealmKnown := routedAuth != nil
+	routedGlobal := routedRealmKnown && isGlobalDomain(routedAuth.Auth.Domain)
 	for _, f := range files {
 		if listAuthEntryDisabled(f) || f.AuthIndex == "" {
 			continue
 		}
-		if isAuthOnCooldown(f.AuthIndex) {
+		if authEntryOnCooldown(f) {
 			continue
 		}
-		cand := &failoverCandidate{AuthID: f.AuthIndex}
+		cand := &failoverCandidate{AuthID: f.AuthIndex, RecordID: f.ID, Aliases: []string{f.Name}}
 		if sa, err := authGetSource(f.AuthIndex); err == nil {
 			cand.Auth = sa
 		}
@@ -108,17 +151,39 @@ func buildFailoverPool(routedAuthID string) *failoverPool {
 			isRouted = f.AuthIndex == routedAuthID || f.ID == routedAuthID ||
 				f.Name == routedAuthID || listEntryMatchesUID(f, routedAuthID, wantName)
 		}
+		if routedRealmKnown {
+			if cand.Auth == nil {
+				// The routed candidate can still use the executor's storage
+				// snapshot, but an unresolved peer must not cross a known realm.
+				if !isRouted {
+					continue
+				}
+				cand.Auth = routedAuth
+			} else if isGlobalDomain(cand.Auth.Auth.Domain) != routedGlobal {
+				continue
+			}
+		}
 		if isRouted {
 			pool.Primary = cand
 			continue
 		}
 		pool.Others = append(pool.Others, cand)
 	}
-	if pool.Primary == nil {
+	if pool.Primary == nil && !routedMatched {
 		// Routed account missing from the list (just added / bridge edge) —
 		// synthesize so at least the first attempt happens with the storage
-		// the executor already carries.
-		pool.Primary = &failoverCandidate{AuthID: routedAuthID}
+		// the executor already carries. When the list did contain the account,
+		// an excluded/disabled/cooldown primary must stay excluded.
+		primary := &failoverCandidate{AuthID: routedAuthID, RecordID: routedAuthID}
+		if len(primaryStorage) > 0 && len(primaryStorage[0]) > 0 {
+			if sa, parseErr := parseStored(primaryStorage[0]); parseErr == nil {
+				primary.Auth = sa
+				primary.Aliases = []string{authFileNameFor(sa)}
+			}
+		}
+		if !candidateOnCooldown(primary) {
+			pool.Primary = primary
+		}
 	}
 	return pool
 }
@@ -141,7 +206,7 @@ func (p *failoverPool) ordered(primaryStorage []byte) []*failoverCandidate {
 				auth = sa
 			}
 		}
-		out = append(out, &failoverCandidate{AuthID: c.AuthID, Auth: auth})
+		out = append(out, &failoverCandidate{AuthID: c.AuthID, RecordID: c.RecordID, Aliases: append([]string(nil), c.Aliases...), Auth: auth})
 	}
 	add(p.Primary, primaryStorage)
 	for _, c := range p.Others {
@@ -256,9 +321,10 @@ func runFailover(cands []*failoverCandidate, attemptFn failoverAttemptFn) failov
 		outcome, status, body, err := attemptFn(cand)
 		switch outcome {
 		case outcomeSuccess:
+			resetCandidateCooldown(cand)
 			return failoverResult{Outcome: outcomeSuccess, AuthID: cand.AuthID, Tried: res.Tried}
 		case outcomeRateLimited:
-			markAuthCooldown(cand.AuthID, parseRateLimitResetAt(body))
+			markCandidateCooldown(cand, parseRateLimitResetAt(body))
 			res.Status, res.Body, res.Err = status, body, err
 		default: // outcomeStop
 			return failoverResult{Outcome: outcomeStop, AuthID: cand.AuthID, Tried: res.Tried,
@@ -300,6 +366,7 @@ func runStreamFailover(cands []*failoverCandidate, attempt func(cand *failoverCa
 		res.Tried = append(res.Tried, cand.AuthID)
 		emitted, status, err := attempt(cand)
 		if err == nil {
+			resetCandidateCooldown(cand)
 			return failoverResult{Outcome: outcomeSuccess, AuthID: cand.AuthID, Tried: res.Tried}
 		}
 		// Chunks already reached the client — the stream must end here.
@@ -308,7 +375,7 @@ func runStreamFailover(cands []*failoverCandidate, attempt func(cand *failoverCa
 				Emitted: true, Status: status, Body: err.Error(), Err: err}
 		}
 		if isRateLimitResponse(status, err.Error()) {
-			markAuthCooldown(cand.AuthID, parseRateLimitResetAt(err.Error()))
+			markCandidateCooldown(cand, parseRateLimitResetAt(err.Error()))
 			res.Status, res.Body, res.Err = status, err.Error(), err
 			continue
 		}
@@ -324,6 +391,74 @@ func runStreamFailover(cands []*failoverCandidate, attempt func(cand *failoverCa
 
 // candUID returns the account's UID for usage records; falls back to the
 // routed account's UID when the candidate carries no parsed auth.
+func markCandidateCooldown(c *failoverCandidate, resetAt time.Time) {
+	for _, key := range candidateCooldownIDs(c) {
+		markAuthCooldown(key, resetAt)
+	}
+}
+
+func resetCandidateCooldown(c *failoverCandidate) {
+	for _, key := range candidateCooldownIDs(c) {
+		resetAuthCooldown(key)
+	}
+}
+
+func candidateCooldownIDs(c *failoverCandidate) []string {
+	if c == nil {
+		return nil
+	}
+	keys := make([]string, 0, 3+len(c.Aliases))
+	identities := []string{c.AuthID, c.RecordID}
+	if c.Auth != nil {
+		identities = append(identities, c.Auth.Account.UID)
+	}
+	identities = append(identities, c.Aliases...)
+	seen := make(map[string]struct{}, len(identities))
+	for _, key := range identities {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func authEntryOnCooldown(f pluginapi.HostAuthFileEntry) bool {
+	keys := []string{f.AuthIndex, f.ID, f.Name, authUIDFromFilename(f.Name)}
+	for _, key := range keys {
+		if isAuthOnCooldown(key) {
+			return true
+		}
+	}
+	return false
+}
+
+func authUIDFromFilename(name string) string {
+	name = strings.TrimSpace(name)
+	if !isWorkbuddyAuthName(name) || isLegacyWorkbuddyAuthName(name) {
+		return ""
+	}
+	uid := name[len(providerName)+1:]
+	if len(uid) < len(".json") || !strings.EqualFold(uid[len(uid)-len(".json"):], ".json") {
+		return ""
+	}
+	return uid[:len(uid)-len(".json")]
+}
+
+func candidateOnCooldown(c *failoverCandidate) bool {
+	for _, key := range candidateCooldownIDs(c) {
+		if isAuthOnCooldown(key) {
+			return true
+		}
+	}
+	return false
+}
+
 func candUID(c *failoverCandidate, fallback string) string {
 	if c != nil && c.Auth != nil && strings.TrimSpace(c.Auth.Account.UID) != "" {
 		return c.Auth.Account.UID
@@ -339,4 +474,11 @@ func findCandidate(cands []*failoverCandidate, authID string) *failoverCandidate
 		}
 	}
 	return nil
+}
+
+func candRecordID(c *failoverCandidate, fallback string) string {
+	if c != nil && strings.TrimSpace(c.RecordID) != "" {
+		return c.RecordID
+	}
+	return fallback
 }

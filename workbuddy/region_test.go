@@ -9,6 +9,9 @@ func TestIsGlobalDomain(t *testing.T) {
 	}{
 		{"www.workbuddy.ai", true},
 		{"workbuddy.ai", true},
+		{"https://www.codebuddy.ai", true},
+		{"https://www.codebuddy.ai/console", true},
+		{"www.codebuddy.ai:443", true},
 		{"www.codebuddy.cn", false},
 		{"", false},
 		{"WORKBUDDY.AI", true},
@@ -17,6 +20,7 @@ func TestIsGlobalDomain(t *testing.T) {
 		{"evilworkbuddy.ai", false},
 		{"workbuddy.ai.evil.com", false},
 		{"notworkbuddy.ai", false},
+		{"https://workbuddy.ai.evil.com", false},
 	}
 	for _, tc := range cases {
 		if got := isGlobalDomain(tc.domain); got != tc.want {

@@ -6,7 +6,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -44,24 +46,76 @@ func wbModels() []pluginapi.ModelInfo {
 	}
 }
 
-func cachedDynamicModels() ([]pluginapi.ModelInfo, bool) {
-	dynamicModelsCache.RLock()
-	defer dynamicModelsCache.RUnlock()
-	if len(dynamicModelsCache.models) > 0 && time.Since(dynamicModelsCache.fetched) < dynamicModelsCacheTTL {
-		return dynamicModelsCache.models, true
+func cloneModelInfos(models []pluginapi.ModelInfo) []pluginapi.ModelInfo {
+	if len(models) == 0 {
+		return nil
 	}
-	return nil, false
+	out := make([]pluginapi.ModelInfo, len(models))
+	for i, model := range models {
+		out[i] = model
+		out[i].SupportedGenerationMethods = append([]string(nil), model.SupportedGenerationMethods...)
+		out[i].SupportedParameters = append([]string(nil), model.SupportedParameters...)
+		out[i].SupportedInputModalities = append([]string(nil), model.SupportedInputModalities...)
+		out[i].SupportedOutputModalities = append([]string(nil), model.SupportedOutputModalities...)
+		if model.Thinking != nil {
+			thinking := *model.Thinking
+			thinking.Levels = append([]string(nil), model.Thinking.Levels...)
+			out[i].Thinking = &thinking
+		}
+	}
+	return out
 }
 
-func storeDynamicModels(models []pluginapi.ModelInfo) {
+// dynamicModelsCacheKey scopes discovery by realm and stable auth identity.
+// The upstream list is account-scoped, so a process-wide model slice can leak
+// Global results into CN requests or expose one account's entitlements to
+// another account.
+func dynamicModelsCacheKey(authID string, storageJSON []byte) string {
+	accessToken, _ := extractAccessToken(storageJSON)
+	realm := "cn"
+	if sa, err := parseStored(storageJSON); err == nil && isGlobalDomain(sa.Auth.Domain) {
+		realm = "global"
+	} else if isGlobalToken(accessToken) {
+		realm = "global"
+	}
+	if id := strings.TrimSpace(authID); id != "" {
+		return realm + ":auth:" + id
+	}
+	if accessToken == "" {
+		return realm + ":anonymous"
+	}
+	sum := sha256.Sum256([]byte(accessToken))
+	return realm + ":token:" + hex.EncodeToString(sum[:12])
+}
+
+func cachedDynamicModels(key string) ([]pluginapi.ModelInfo, bool) {
+	dynamicModelsCache.RLock()
+	entry, ok := dynamicModelsCache.byKey[key]
+	dynamicModelsCache.RUnlock()
+	if !ok || len(entry.models) == 0 || time.Since(entry.fetched) >= dynamicModelsCacheTTL {
+		return nil, false
+	}
+	return cloneModelInfos(entry.models), true
+}
+
+func storeDynamicModels(key string, models []pluginapi.ModelInfo) {
+	if strings.TrimSpace(key) == "" || len(models) == 0 {
+		return
+	}
 	dynamicModelsCache.Lock()
-	dynamicModelsCache.models = models
-	dynamicModelsCache.fetched = time.Now()
+	if dynamicModelsCache.byKey == nil {
+		dynamicModelsCache.byKey = make(map[string]dynamicModelsCacheEntry)
+	}
+	dynamicModelsCache.byKey[key] = dynamicModelsCacheEntry{
+		models:  cloneModelInfos(models),
+		fetched: time.Now(),
+	}
 	dynamicModelsCache.Unlock()
 }
 
-func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
-	if models, ok := cachedDynamicModels(); ok {
+func fetchDynamicModelsFromStorage(authID string, storageJSON []byte) []pluginapi.ModelInfo {
+	key := dynamicModelsCacheKey(authID, storageJSON)
+	if models, ok := cachedDynamicModels(key); ok {
 		return models
 	}
 	accessToken := ""
@@ -74,8 +128,8 @@ func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
 		return wbModels()
 	}
 	if dyn, err := callModelsAPI(accessToken); err == nil && len(dyn) > 0 {
-		storeDynamicModels(dyn)
-		return dyn
+		storeDynamicModels(key, dyn)
+		return cloneModelInfos(dyn)
 	}
 	return wbModels()
 }
@@ -417,7 +471,7 @@ func handleModelForAuth(raw []byte) ([]byte, error) {
 	// req.AuthProvider back would silently drop the model list whenever the
 	// auth file carries a non-canonical provider string.
 	cacheModelAliases(req.Host)
-	models := fetchDynamicModelsFromStorage(req.StorageJSON)
+	models := fetchDynamicModelsFromStorage(req.AuthID, req.StorageJSON)
 	models = filterExcludedModels(models, req.Host)
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
 }

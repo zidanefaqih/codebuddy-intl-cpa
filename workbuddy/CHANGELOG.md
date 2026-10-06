@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Reliability and safety hardening
+
+- Serialize auth mutations across runtime index, core record ID, UID, and file aliases to prevent stale token/metadata saves and nested-lock deadlocks.
+- Preserve host metadata and provider-specific auth fields across parse, import, refresh, lifecycle writes, and legacy flat-file migration.
+- Keep check-in, trial, and growth-report mutations one-shot; restrict billing retries to transient HTTP 5xx operations.
+- Harden failover realm filtering, cooldown aliases, runtime/core identity attribution, and host HTTP callback error handling without replaying ambiguous POSTs.
+- Isolate dynamic model discovery per account/realm and honor scheduler toggles for check-in, keepalive, and daily bonus.
+
 ## 0.8.2
 
 ### Concurrency + lifecycle hardening

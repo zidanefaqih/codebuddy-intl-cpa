@@ -268,7 +268,12 @@ func getLastDailyBonus() *dailyBonusSummary {
 }
 
 // runDailyBonusOne lights one account's day if it is not lit yet.
-func runDailyBonusOne(authIndex string, row dailyBonusRow) dailyBonusRow {
+func runDailyBonusOne(authIndex, authID string, row dailyBonusRow) dailyBonusRow {
+	// The report endpoint is intentionally not retried. Serialize scheduled and
+	// manual runs so two concurrent heatmap=0 reads cannot emit two beacons.
+	unlock := lockAuthMutation(authIndex, authID)
+	defer unlock()
+
 	sa, err := hostAuthGet(authIndex)
 	if err != nil {
 		row.Status, row.Detail = "failed", "get auth: "+truncateRedacted(err.Error(), 160)
@@ -333,7 +338,7 @@ func runDailyBonus() *dailyBonusSummary {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			row := runDailyBonusOne(f.AuthIndex, dailyBonusRow{AuthIndex: f.AuthIndex})
+			row := runDailyBonusOne(f.AuthIndex, f.ID, dailyBonusRow{AuthIndex: f.AuthIndex})
 			mu.Lock()
 			sum.Results = append(sum.Results, row)
 			mu.Unlock()
@@ -389,7 +394,7 @@ func handleDailyBonusNow(req pluginapi.ManagementRequest) map[string]any {
 		sum := runDailyBonus()
 		return map[string]any{"when": sum.When, "results": sum.Results}
 	}
-	row := runDailyBonusOne(authIndex, dailyBonusRow{AuthIndex: authIndex})
+	row := runDailyBonusOne(authIndex, authIDForIndex(authIndex), dailyBonusRow{AuthIndex: authIndex})
 	return map[string]any{"when": time.Now(), "results": []dailyBonusRow{row}}
 }
 

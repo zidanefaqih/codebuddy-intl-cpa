@@ -45,10 +45,13 @@ func handleUsage(raw []byte) ([]byte, error) {
 	if started.IsZero() {
 		started = time.Now().Add(-record.Latency)
 	}
+	// CPAMP's field is named auth_index. New CPA hosts provide the runtime
+	// index separately from the core AuthID; older hosts may omit it, so keep
+	// AuthID as a compatibility fallback.
 	forwardUsageToCPAMP(
 		record.Alias,
 		record.Model,
-		record.AuthID,
+		firstNonEmpty(record.AuthIndex, record.AuthID),
 		started,
 		detail,
 		record.Failed,

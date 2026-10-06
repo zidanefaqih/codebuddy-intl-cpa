@@ -1,7 +1,7 @@
 .PHONY: build test lint clean release
 
 GO ?= go
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+VERSION ?= $(shell tr -d ' \n\r' < VERSION 2>/dev/null || echo "dev")
 LDFLAGS := -X main.version=$(VERSION)
 
 # Default target: build the plugin for the current platform.
@@ -41,8 +41,8 @@ release: clean
 	  fi; \
 	done
 
-# Tag a release that CI turns into a GitHub release (usage: make tag VERSION=0.9.0).
-# The tag pattern must stay 'workbuddy-v*' to match .github/workflows/build.yml.
+# Tag a release that CI turns into a GitHub release (usage: make tag VERSION=0.9.3).
+# The official plugin store reads v<version>, so keep the canonical tag shape.
 tag:
-	git tag -a workbuddy-v$(VERSION) -m "workbuddy v$(VERSION)"
-	git push origin workbuddy-v$(VERSION)
+	git tag -a v$(VERSION) -m "CodeBuddy Intl CPA v$(VERSION)"
+	git push origin v$(VERSION)

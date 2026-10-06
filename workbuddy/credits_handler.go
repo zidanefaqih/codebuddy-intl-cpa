@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -31,41 +30,78 @@ func handleImportAuth(req pluginapi.ManagementRequest) map[string]any {
 	if err != nil {
 		return map[string]any{"success": false, "error": err.Error()}
 	}
-	// Persist nested storage + top-level type/note/logo/disabled for Auth page.
-	fileJSON, err := buildAuthFileJSON(sa, false, displayNote(sa, nil, false), nil)
+	// A re-import can race with refresh/lifecycle writes and may target an
+	// existing legacy workbuddy.json. Resolve every visible identity, lock it,
+	// then take a fresh physical snapshot before saving.
+	auth := toAuthData(sa)
+	files, err := hostAuthList()
+	if err != nil {
+		return map[string]any{"success": false, "error": "host.auth.list: " + err.Error()}
+	}
+	var existingEntry *pluginapi.HostAuthFileEntry
+	identities := []string{sa.Account.UID, auth.FileName}
+	for i := range files {
+		f := &files[i]
+		matched := strings.EqualFold(strings.TrimSpace(f.Name), auth.FileName) ||
+			strings.EqualFold(strings.TrimSpace(f.ID), auth.FileName) ||
+			(sa.Account.UID != "" && listEntryMatchesUID(*f, sa.Account.UID, auth.FileName))
+		if !matched && sa.Account.UID != "" && f.AuthIndex != "" {
+			if current, getErr := hostAuthGet(f.AuthIndex); getErr == nil &&
+				strings.EqualFold(strings.TrimSpace(current.Account.UID), strings.TrimSpace(sa.Account.UID)) {
+				matched = true
+			}
+		}
+		if matched {
+			existingEntry = f
+			identities = append(identities, f.AuthIndex, f.ID, f.Name)
+			break
+		}
+	}
+	unlock := lockAuthMutationKeys(identities...)
+	defer unlock()
+
+	var existing *hostAuthPhysical
+	if existingEntry != nil {
+		existing, err = hostAuthGetPhysical(existingEntry.AuthIndex)
+		if err != nil {
+			return map[string]any{"success": false, "error": "host.auth.get: " + err.Error()}
+		}
+	}
+	var fileJSON []byte
+	if existing != nil {
+		fileJSON, err = mergeAuthStorageJSON(existing.JSON, sa)
+		if err == nil {
+			var doc map[string]any
+			if err = json.Unmarshal(fileJSON, &doc); err == nil {
+				doc["type"] = providerName
+				doc["provider"] = providerName
+				doc["logo"] = pluginLogoURL
+				fileJSON, err = json.Marshal(doc)
+			}
+		}
+	} else {
+		// New imports receive the provider defaults. Existing imports above keep
+		// disabled/note/custom host fields from the physical file unchanged.
+		fileJSON, err = buildAuthFileJSON(sa, false, displayNote(sa, nil, false), nil)
+	}
 	if err != nil {
 		return map[string]any{"success": false, "error": err.Error()}
 	}
-	auth := toAuthData(sa)
-	saveReq := pluginapi.HostAuthSaveRequest{
-		Name: auth.FileName,
-		JSON: fileJSON,
-	}
-	saveBody, _ := json.Marshal(saveReq)
-	rawResp, err := hostCall(pluginabi.MethodHostAuthSave, saveBody)
+	saveResp, err := hostAuthSaveJSONResponse(auth.FileName, fileJSON)
 	if err != nil {
-		return map[string]any{"success": false, "error": "host.auth.save: " + err.Error()}
+		return map[string]any{"success": false, "error": err.Error()}
 	}
-	var env envelope
-	if err := json.Unmarshal(rawResp, &env); err != nil || !env.OK {
-		msg := "host.auth.save failed"
-		if env.Error != nil && env.Error.Message != "" {
-			msg = env.Error.Message
-		}
-		return map[string]any{"success": false, "error": msg}
+	if saveResp.Name == "" {
+		saveResp.Name = auth.FileName
 	}
-	var saveResp pluginapi.HostAuthSaveResponse
-	_ = json.Unmarshal(env.Result, &saveResp)
-	// Remove legacy workbuddy.json if it exists and differs from the saved name.
-	if saveResp.Name != "" && !strings.EqualFold(saveResp.Name, authFileName) {
-		legacyPath := strings.TrimSpace(saveResp.Path)
-		// Best-effort: if auth dir is known via saveResp.Path parent, try removing sibling workbuddy.json.
-		if legacyPath != "" {
-			dir := filepath.Dir(legacyPath)
-			legacyFile := filepath.Join(dir, authFileName)
-			// A-35: use deleteAuthFileInDir for absolute path + directory confinement.
-			_ = deleteAuthFileInDir(legacyFile, dir)
-		}
+	if saveResp.Path == "" && existing != nil {
+		saveResp.Path = existing.Path
+	}
+	// When a UID-bearing legacy file was matched, canonicalize it only after
+	// the new save succeeds. Directory confinement keeps the cleanup bounded.
+	if existing != nil && isLegacyWorkbuddyAuthName(existing.Name) &&
+		!strings.EqualFold(existing.Name, auth.FileName) && existing.Path != "" {
+		_ = deleteAuthFileInDir(existing.Path, filepath.Dir(existing.Path))
 	}
 	return map[string]any{
 		"success":  true,
@@ -114,32 +150,46 @@ func handleClaimTrial(req pluginapi.ManagementRequest) map[string]any {
 		if f.AuthIndex != authIndex {
 			continue
 		}
-		sa, err := hostAuthGet(f.AuthIndex)
-		if err != nil {
-			return map[string]any{"auth_index": authIndex, "error": err.Error()}
-		}
-		if !isGlobalDomain(sa.Auth.Domain) {
-			return map[string]any{"auth_index": authIndex, "error": "专家加油包仅适用于国际版账号"}
-		}
-		res, err := performTrialCall(sa)
-		out := map[string]any{"auth_index": authIndex, "nickname": sa.Account.Nickname}
-		if err != nil {
-			out["error"] = err.Error()
-		} else {
-			for k, v := range res {
-				out[k] = v
+		// Trial is a one-shot POST. Hold the account mutation lock across the
+		// read and claim so a concurrent manual/scheduled action cannot issue a
+		// second claim. Reconcile after unlocking because it takes the same lock.
+		unlock := lockAuthMutation(f.AuthIndex, f.ID)
+		var (
+			sa  *storedAuth
+			out map[string]any
+		)
+		func() {
+			defer unlock()
+			var err error
+			sa, err = hostAuthGet(f.AuthIndex)
+			if err != nil {
+				out = map[string]any{"auth_index": authIndex, "error": err.Error()}
+				return
 			}
-		}
-		// Invalidate credits cache (copy entry, set credits=nil, keep plan/checkin).
-		if v, ok := accountCache.Load(f.ID); ok {
-			if e, ok2 := v.(*accountCacheEntry); ok2 {
-				fresh := *e
-				fresh.credits = nil
-				fresh.fetched = time.Now()
-				accountCache.Store(f.ID, &fresh)
+			if !isGlobalDomain(sa.Auth.Domain) {
+				out = map[string]any{"auth_index": authIndex, "error": "专家加油包仅适用于国际版账号"}
+				return
 			}
-		}
-		if lifecycleEnabled() {
+			res, callErr := performTrialCall(sa)
+			out = map[string]any{"auth_index": authIndex, "nickname": sa.Account.Nickname}
+			if callErr != nil {
+				out["error"] = callErr.Error()
+			} else {
+				for k, v := range res {
+					out[k] = v
+				}
+			}
+			// Invalidate credits cache (copy entry, set credits=nil, keep plan/checkin).
+			if v, ok := accountCache.Load(f.ID); ok {
+				if e, ok2 := v.(*accountCacheEntry); ok2 {
+					fresh := *e
+					fresh.credits = nil
+					fresh.fetched = time.Now()
+					accountCache.Store(f.ID, &fresh)
+				}
+			}
+		}()
+		if sa != nil && lifecycleEnabled() {
 			_, _ = reconcileOneAccount(authIndex, f.ID, true)
 		}
 		return out

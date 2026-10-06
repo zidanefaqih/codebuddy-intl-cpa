@@ -68,6 +68,25 @@ func TestJsonStr(t *testing.T) {
 		t.Error("fallback")
 	}
 }
+func TestShouldRunCheckinNow(t *testing.T) {
+	at := time.Date(2026, 7, 24, 9, 0, 0, 0, time.UTC)
+	if !shouldRunCheckinNow(at) {
+		t.Fatal("09:00 should open the check-in window")
+	}
+	at = time.Date(2026, 7, 24, 9, 59, 59, 0, time.UTC)
+	if !shouldRunCheckinNow(at) {
+		t.Fatal("09:59 should remain inside the check-in window")
+	}
+	at = time.Date(2026, 7, 24, 10, 0, 0, 0, time.UTC)
+	if shouldRunCheckinNow(at) {
+		t.Fatal("10:00 should close the check-in window")
+	}
+	at = time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	if shouldRunCheckinNow(at) {
+		t.Fatal("daily-bonus slot must not run CN check-in")
+	}
+}
+
 func TestNextCheckinTime(t *testing.T) {
 	// nextCheckinTime is the scheduler loop's wake-up computation, so it must
 	// account for every scheduled family: checkin (09:00/21:00), keepalive

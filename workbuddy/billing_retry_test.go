@@ -71,6 +71,48 @@ func TestBillingCall_NoRetryOn4xx(t *testing.T) {
 }
 
 // TestIsTransientBillingErr covers classification boundaries.
+func TestMutatingBillingCallsDoNotRetry5xx(t *testing.T) {
+	orig := billingRetryDelays
+	billingRetryDelays = []time.Duration{1 * time.Millisecond, 1 * time.Millisecond}
+	defer func() { billingRetryDelays = orig }()
+
+	var checkinCalls, trialCalls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var calls *int32
+		switch r.URL.Path {
+		case "/v2/billing/meter/daily-checkin":
+			calls = &checkinCalls
+		case "/billing/ide/trial":
+			calls = &trialCalls
+		default:
+			t.Fatalf("unexpected mutation path %s", r.URL.Path)
+		}
+		atomic.AddInt32(calls, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"transient"}`))
+	}))
+	defer srv.Close()
+
+	globalAuth := &storedAuth{Auth: storedTokens{Domain: "www.workbuddy.ai"}}
+	cnAuth := &storedAuth{Auth: storedTokens{Domain: "www.codebuddy.cn"}}
+	restoreGlobal := setBillingBaseGlobal(srv.URL)
+	if _, err := performTrialCall(globalAuth); err != nil {
+		t.Fatalf("performTrialCall returned transport error: %v", err)
+	}
+	restoreGlobal()
+	restoreCN := setBillingBase(srv.URL)
+	if _, err := performCheckinCall(cnAuth); err != nil {
+		t.Fatalf("performCheckinCall returned transport error: %v", err)
+	}
+	restoreCN()
+	if got := atomic.LoadInt32(&trialCalls); got != 1 {
+		t.Fatalf("trial POST count = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&checkinCalls); got != 1 {
+		t.Fatalf("check-in POST count = %d, want 1", got)
+	}
+}
+
 func TestIsTransientBillingErr(t *testing.T) {
 	tests := []struct {
 		err  error

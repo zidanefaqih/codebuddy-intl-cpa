@@ -92,12 +92,15 @@ func pumpWithFailover(ctx context.Context, cancel context.CancelFunc, req execut
 
 	switch fin.Outcome {
 	case outcomeSuccess:
-		publishUsage(req.Model, upstreamModel, candUID(findCandidate(cands, fin.AuthID), authUID), started, collector.detail(), false, 0, "")
-		recordUsageMap(req.Model, upstreamModel, req.AuthID, authUID, started, collector.lastMap(), false)
-		onFailoverSuccess(req.AuthID, fin.AuthID, authUID)
+		answered := findCandidate(cands, fin.AuthID)
+		usageAuthID := fin.AuthID
+		usageUID := candUID(answered, authUID)
+		publishUsage(req.Model, upstreamModel, usageAuthID, started, collector.detail(), false, 0, "")
+		recordUsageMap(req.Model, upstreamModel, usageAuthID, usageUID, started, collector.lastMap(), false)
+		onFailoverSuccess(req.AuthID, fin.AuthID, candRecordID(answered, fin.AuthID), authUID)
 	case outcomeRateLimited:
 		// Every eligible account hit a rate limit before any chunk was sent.
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, fin.Status, fin.Body)
+		publishUsage(req.Model, upstreamModel, req.AuthID, started, usage.Detail{}, true, fin.Status, fin.Body)
 		recordUsageMap(req.Model, upstreamModel, req.AuthID, authUID, started, collector.lastMap(), true)
 		streamEmitError(streamID, fmt.Sprintf("upstream %d: %s", fin.Status, truncateRedacted(fin.Body, 200)))
 	default: // outcomeStop
@@ -106,8 +109,11 @@ func pumpWithFailover(ctx context.Context, cancel context.CancelFunc, req execut
 			// client has partial data. Record the attempt as failed (upstream
 			// may have billed tokens seen in the usage chunks) and emit the
 			// terminal error frame.
-			publishUsage(req.Model, upstreamModel, authUID, started, collector.detail(), true, fin.Status, fin.Body)
-			recordUsageMap(req.Model, upstreamModel, req.AuthID, authUID, started, collector.lastMap(), true)
+			answered := findCandidate(cands, fin.AuthID)
+			usageAuthID := firstNonEmpty(fin.AuthID, req.AuthID)
+			usageUID := candUID(answered, authUID)
+			publishUsage(req.Model, upstreamModel, usageAuthID, started, collector.detail(), true, fin.Status, fin.Body)
+			recordUsageMap(req.Model, upstreamModel, usageAuthID, usageUID, started, collector.lastMap(), true)
 			if fin.Status > 0 {
 				streamEmitError(streamID, fmt.Sprintf("upstream %d: %s", fin.Status, truncateRedacted(fin.Body, 200)))
 			} else if fin.Err != nil {
@@ -115,8 +121,9 @@ func pumpWithFailover(ctx context.Context, cancel context.CancelFunc, req execut
 			}
 			return
 		}
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, fin.Status, fin.Body)
-		recordUsageMap(req.Model, upstreamModel, req.AuthID, authUID, started, collector.lastMap(), true)
+		usageAuthID := firstNonEmpty(fin.AuthID, req.AuthID)
+		publishUsage(req.Model, upstreamModel, usageAuthID, started, usage.Detail{}, true, fin.Status, fin.Body)
+		recordUsageMap(req.Model, upstreamModel, usageAuthID, authUID, started, collector.lastMap(), true)
 		if fin.Status > 0 && !isRateLimitResponse(fin.Status, fin.Body) {
 			go reconcileByUID(authUID, fin.Status, fin.Body)
 		}

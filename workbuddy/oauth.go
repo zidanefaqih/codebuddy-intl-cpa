@@ -171,6 +171,9 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("refresh: %w", err)
 	}
+	unlock := lockAuthMutation("", req.AuthID)
+	defer unlock()
+
 	// Route via host.http.do so request-log captures the refresh call (H2
 	// compliance: was doJSON(sharedHTTPClient()) — bypassed host transport
 	// policy + logging for the X-Refresh-Token endpoint).
@@ -197,11 +200,12 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 		time.Now().Add(time.Duration(tok.ExpiresIn)*time.Second).Unix(),
 		sa.Auth.ExpiresAt,
 	)
-	// No explicit host.auth.save here: the host's auth Manager persists the
-	// refreshed credential itself after Refresh returns (conductor.go
-	// refreshAuth → m.Update → persist). Writing from the plugin too would
-	// double-write the file.
-	return okEnvelope(pluginapi.AuthRefreshResponse{Auth: toAuthDataForRefresh(sa)})
+	// CPA persists the returned AuthData through its auth manager. Keep the
+	// existing host metadata and disabled state in that response; returning only
+	// provider defaults would silently re-enable lifecycle-disabled accounts and
+	// drop panel notes/custom fields.
+	existingMetadata, disabled := authRefreshMetadata(req)
+	return okEnvelope(pluginapi.AuthRefreshResponse{Auth: toAuthDataForRefresh(sa, existingMetadata, disabled, req.StorageJSON)})
 }
 
 // preserveExpiry reuses the previous token's expiresAt when the refresh
@@ -224,8 +228,30 @@ func preserveExpiry(newExpiry, oldExpiry int64) int64 {
 // NEW file, and the old one stays → duplicate auth records.
 //
 // Returning empty FileName = "keep what you had" → no rename, no dup.
-func toAuthDataForRefresh(sa *storedAuth) pluginapi.AuthData {
-	ad := toAuthDataOpts(sa, nil, false)
+func authRefreshMetadata(req pluginapi.AuthRefreshRequest) (map[string]any, bool) {
+	existing := authMetadataFromJSON(req.StorageJSON)
+	if existing == nil {
+		existing = make(map[string]any)
+	}
+	// Host metadata is the current authoritative view; raw storage fills gaps
+	// for older hosts that did not expose metadata separately.
+	for key, value := range req.Metadata {
+		existing[key] = value
+	}
+	disabled := parseDisabledFromAuthJSON(req.StorageJSON)
+	if value, ok := existing["disabled"]; ok {
+		disabled = metadataBool(value)
+	}
+	return existing, disabled
+}
+
+func toAuthDataForRefresh(sa *storedAuth, existing map[string]any, disabled bool, previousStorage ...[]byte) pluginapi.AuthData {
+	ad := toAuthDataWithMetadata(sa, existing, disabled)
+	if len(previousStorage) > 0 {
+		if merged, err := mergeAuthStorageJSON(previousStorage[0], sa); err == nil {
+			ad.StorageJSON = merged
+		}
+	}
 	ad.FileName = "" // let host backfill original
 	ad.ID = ""       // let host compute from path (prevents ID mismatch dupes)
 	return ad

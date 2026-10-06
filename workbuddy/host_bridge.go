@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -142,13 +143,17 @@ func hostHTTPDo(req *http.Request) (*hostHTTPResponse, error) {
 	}
 	raw, err := hostCall(pluginabi.MethodHostHTTPDo, mustJSON(wire))
 	if err != nil {
-		// Bridge exists but the call failed — fall back to direct so a transient
-		// host RPC error doesn't take down the executor.
-		return hostHTTPDoDirect(req, bodyBytes)
+		if hostHTTPBridgeUnavailable(err) {
+			return hostHTTPDoDirect(req, bodyBytes)
+		}
+		return nil, err
 	}
 	result, err := hostBridgeUnwrap(raw, pluginabi.MethodHostHTTPDo)
 	if err != nil {
-		return hostHTTPDoDirect(req, bodyBytes)
+		if hostHTTPBridgeUnavailable(err) {
+			return hostHTTPDoDirect(req, bodyBytes)
+		}
+		return nil, err
 	}
 	var resp struct {
 		StatusCode int                 `json:"status_code"`
@@ -157,6 +162,9 @@ func hostHTTPDo(req *http.Request) (*hostHTTPResponse, error) {
 	}
 	if err := json.Unmarshal(result, &resp); err != nil {
 		return nil, fmt.Errorf("decode host.http.do response: %w", err)
+	}
+	if resp.StatusCode <= 0 {
+		return nil, fmt.Errorf("%s: response missing status_code", pluginabi.MethodHostHTTPDo)
 	}
 	return &hostHTTPResponse{
 		StatusCode: resp.StatusCode,
@@ -222,7 +230,9 @@ func hostHTTPDoStream(req *http.Request) (*hostHTTPStream, int, http.Header, err
 		_ = req.Body.Close()
 		bodyBytes = b
 	}
-	if !hostBridgeAvailable() {
+	// Match hostHTTPDo's Windows mitigation: nested synchronous callbacks can
+	// invalidate the C stack response pointer on the host's Windows loader.
+	if !hostBridgeAvailable() || runtime.GOOS == "windows" {
 		return hostHTTPDoStreamDirect(req, bodyBytes)
 	}
 	wire := rpcHostHTTPRequestWire{
@@ -235,18 +245,24 @@ func hostHTTPDoStream(req *http.Request) (*hostHTTPStream, int, http.Header, err
 	}
 	raw, err := hostCall(pluginabi.MethodHostHTTPDoStream, mustJSON(wire))
 	if err != nil {
-		return hostHTTPDoStreamDirect(req, bodyBytes)
+		if hostHTTPBridgeUnavailable(err) {
+			return hostHTTPDoStreamDirect(req, bodyBytes)
+		}
+		return nil, 0, nil, err
 	}
 	result, err := hostBridgeUnwrap(raw, pluginabi.MethodHostHTTPDoStream)
 	if err != nil {
-		return hostHTTPDoStreamDirect(req, bodyBytes)
+		if hostHTTPBridgeUnavailable(err) {
+			return hostHTTPDoStreamDirect(req, bodyBytes)
+		}
+		return nil, 0, nil, err
 	}
 	var resp rpcHostHTTPStreamResponseWire
 	if err := json.Unmarshal(result, &resp); err != nil {
 		return nil, 0, nil, fmt.Errorf("decode host.http.do_stream response: %w", err)
 	}
 	if resp.StreamID == "" {
-		return nil, resp.StatusCode, http.Header(resp.Headers), fmt.Errorf("host stream bridge unavailable")
+		return nil, resp.StatusCode, http.Header(resp.Headers), fmt.Errorf("host http stream bridge is unavailable")
 	}
 	return &hostHTTPStream{streamID: resp.StreamID}, resp.StatusCode, http.Header(resp.Headers), nil
 }
@@ -341,40 +357,52 @@ func newHostStreamReader(s *hostHTTPStream) *hostStreamReader {
 }
 
 func (r *hostStreamReader) Read(p []byte) (int, error) {
-	// Drain buffered bytes first.
-	if len(r.buf) > 0 {
-		n := copy(p, r.buf)
-		r.buf = r.buf[n:]
-		return n, nil
-	}
-	if r.done {
-		if r.err != nil {
-			return 0, r.err
+	for {
+		// Drain buffered bytes first.
+		if len(r.buf) > 0 {
+			n := copy(p, r.buf)
+			r.buf = r.buf[n:]
+			return n, nil
 		}
-		return 0, io.EOF
-	}
-	chunk, done, err := r.s.Read()
-	if err != nil {
-		r.done = true
-		r.err = err
-		return 0, err
-	}
-	if len(chunk) > 0 {
-		n := copy(p, chunk)
-		if n < len(chunk) {
-			r.buf = append(r.buf, chunk[n:]...)
+		if r.done {
+			if r.err != nil {
+				return 0, r.err
+			}
+			return 0, io.EOF
+		}
+		chunk, done, err := r.s.Read()
+		if err != nil {
+			r.done = true
+			r.err = err
+			return 0, err
+		}
+		if len(chunk) > 0 {
+			n := copy(p, chunk)
+			if n < len(chunk) {
+				r.buf = append(r.buf, chunk[n:]...)
+			}
+			if done {
+				r.done = true
+			}
+			return n, nil
 		}
 		if done {
 			r.done = true
+			return 0, io.EOF
 		}
-		return n, nil
+		// Empty chunk, not done: keep pulling without growing the call stack.
 	}
-	if done {
-		r.done = true
-		return 0, io.EOF
+}
+
+// hostHTTPBridgeUnavailable is intentionally limited to an unsupported
+// callback. Other bridge errors may happen after the host has sent the
+// upstream request; retrying the POST via the plugin's direct client could
+// duplicate billing or a state mutation.
+func hostHTTPBridgeUnavailable(err error) bool {
+	if err == nil {
+		return false
 	}
-	// Empty chunk, not done — recurse to fetch next.
-	return r.Read(p)
+	return strings.Contains(strings.ToLower(err.Error()), "unsupported host callback")
 }
 
 // mustJSON marshals v and panics on error — the wire structs above are always

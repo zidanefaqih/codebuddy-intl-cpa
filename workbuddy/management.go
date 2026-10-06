@@ -367,10 +367,3 @@ func mgmtHTMLResponse(body []byte) pluginapi.ManagementResponse {
 	h.Set("Content-Type", "text/html; charset=utf-8")
 	return pluginapi.ManagementResponse{StatusCode: http.StatusOK, Headers: h, Body: body}
 }
-
-// checkinLocks serializes per-account manual check-in (B4).
-// Entries are pruned during dashboard prune to avoid unbounded growth
-// when auth accounts are deleted/rotated.
-var (
-	checkinLocks sync.Map // auth_index -> *sync.Mutex
-)
