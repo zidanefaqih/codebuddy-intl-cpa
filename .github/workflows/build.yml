@@ -14,7 +14,7 @@ name: Build
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, dev]
     tags: ["v*", "workbuddy-v*"]
   workflow_dispatch:
     inputs:
