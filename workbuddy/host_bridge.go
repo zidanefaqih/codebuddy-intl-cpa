@@ -67,6 +67,52 @@ type rpcHostHTTPInner struct {
 	Body    []byte              `json:"body,omitempty"`
 }
 
+// rpcHostHTTPResponseWire accepts both the snake_case wire format used by
+// newer hosts and the Go field-name format emitted by older CPA runtimes.
+// pluginapi.HTTPResponse has no JSON tags, so older hosts serialize
+// StatusCode/Headers/Body instead of status_code/headers/body.
+type rpcHostHTTPResponseWire struct {
+	StatusCode int
+	Headers    map[string][]string
+	Body       []byte
+}
+
+func (r *rpcHostHTTPResponseWire) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		StatusCode       int                 `json:"status_code"`
+		LegacyStatusCode int                 `json:"StatusCode"`
+		CamelStatusCode  int                 `json:"statusCode"`
+		Headers          map[string][]string `json:"headers"`
+		LegacyHeaders    map[string][]string `json:"Headers"`
+		Body             []byte              `json:"body"`
+		LegacyBody       []byte              `json:"Body"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	statusCode := wire.StatusCode
+	if statusCode <= 0 {
+		statusCode = wire.LegacyStatusCode
+	}
+	if statusCode <= 0 {
+		statusCode = wire.CamelStatusCode
+	}
+	headers := wire.Headers
+	if headers == nil {
+		headers = wire.LegacyHeaders
+	}
+	body := wire.Body
+	if body == nil {
+		body = wire.LegacyBody
+	}
+	*r = rpcHostHTTPResponseWire{
+		StatusCode: statusCode,
+		Headers:    headers,
+		Body:       body,
+	}
+	return nil
+}
+
 type rpcHostHTTPStreamResponseWire struct {
 	StatusCode int                         `json:"status_code"`
 	Headers    map[string][]string         `json:"headers,omitempty"`
@@ -155,11 +201,7 @@ func hostHTTPDo(req *http.Request) (*hostHTTPResponse, error) {
 		}
 		return nil, err
 	}
-	var resp struct {
-		StatusCode int                 `json:"status_code"`
-		Headers    map[string][]string `json:"headers,omitempty"`
-		Body       []byte              `json:"body,omitempty"`
-	}
+	var resp rpcHostHTTPResponseWire
 	if err := json.Unmarshal(result, &resp); err != nil {
 		return nil, fmt.Errorf("decode host.http.do response: %w", err)
 	}

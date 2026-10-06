@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -29,6 +30,55 @@ func TestHostBridgeUnwrapKeepsEmptySuccessfulResultAsErrorForDecoder(t *testing.
 	}
 	if len(result) != 0 {
 		t.Fatalf("result = %s, want empty result", result)
+	}
+}
+
+func TestHostHTTPResponseWireAcceptsCPAFieldStyles(t *testing.T) {
+	tests := []struct {
+		name   string
+		raw    string
+		status int
+		header string
+		body   string
+	}{
+		{
+			name:   "snake_case",
+			raw:    `{"status_code":204,"headers":{"X-Test":["snake"]},"body":"c25ha2U="}`,
+			status: 204,
+			header: "snake",
+			body:   "snake",
+		},
+		{
+			name:   "legacy_go_fields",
+			raw:    `{"StatusCode":206,"Headers":{"X-Test":["legacy"]},"Body":"bGVnYWN5"}`,
+			status: 206,
+			header: "legacy",
+			body:   "legacy",
+		},
+		{
+			name:   "camel_case",
+			raw:    `{"statusCode":207,"headers":{"X-Test":["camel"]},"body":"Y2FtZWw="}`,
+			status: 207,
+			header: "camel",
+			body:   "camel",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got rpcHostHTTPResponseWire
+			if err := json.Unmarshal([]byte(tt.raw), &got); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got.StatusCode != tt.status {
+				t.Fatalf("status = %d, want %d", got.StatusCode, tt.status)
+			}
+			if got.Headers["X-Test"][0] != tt.header {
+				t.Fatalf("header = %#v, want %q", got.Headers["X-Test"], tt.header)
+			}
+			if string(got.Body) != tt.body {
+				t.Fatalf("body = %q, want %q", got.Body, tt.body)
+			}
+		})
 	}
 }
 
