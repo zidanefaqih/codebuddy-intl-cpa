@@ -471,6 +471,7 @@ function updateOneCard(a){
     el.replaceWith(newCard);
     bindCardActions(newCard);
   }
+  updateFilterCounts(lastAccounts||[]);
   filterRegion(currentFilter, null);
   // Update summary + re-check selection when all done.
   const all=lastAccounts||[];

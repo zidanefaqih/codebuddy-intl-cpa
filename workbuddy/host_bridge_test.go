@@ -82,6 +82,23 @@ func TestHostHTTPResponseWireAcceptsCPAFieldStyles(t *testing.T) {
 	}
 }
 
+func TestHostHTTPStreamResponseWireAcceptsLegacyFields(t *testing.T) {
+	var got rpcHostHTTPStreamResponseWire
+	raw := []byte(`{"StatusCode":200,"Headers":{"X-Test":["legacy"]},"StreamID":"stream-legacy"}`)
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", got.StatusCode)
+	}
+	if got.Headers["X-Test"][0] != "legacy" {
+		t.Fatalf("headers = %#v, want legacy header", got.Headers)
+	}
+	if got.StreamID != "stream-legacy" {
+		t.Fatalf("stream ID = %q, want %q", got.StreamID, "stream-legacy")
+	}
+}
+
 func TestHostHTTPBridgeUnavailableIsNarrow(t *testing.T) {
 	if !hostHTTPBridgeUnavailable(assertError("unsupported host callback host.http.do")) {
 		t.Fatal("unsupported callback should allow compatibility fallback")

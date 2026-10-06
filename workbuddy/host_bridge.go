@@ -114,10 +114,57 @@ func (r *rpcHostHTTPResponseWire) UnmarshalJSON(data []byte) error {
 }
 
 type rpcHostHTTPStreamResponseWire struct {
-	StatusCode int                         `json:"status_code"`
-	Headers    map[string][]string         `json:"headers,omitempty"`
-	StreamID   string                      `json:"stream_id,omitempty"`
-	Chunks     []pluginapi.HTTPStreamChunk `json:"chunks,omitempty"`
+	StatusCode int
+	Headers    map[string][]string
+	StreamID   string
+	Chunks     []pluginapi.HTTPStreamChunk
+}
+
+func (r *rpcHostHTTPStreamResponseWire) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		StatusCode       int                         `json:"status_code"`
+		LegacyStatusCode int                         `json:"StatusCode"`
+		CamelStatusCode  int                         `json:"statusCode"`
+		Headers          map[string][]string         `json:"headers"`
+		LegacyHeaders    map[string][]string         `json:"Headers"`
+		StreamID         string                      `json:"stream_id"`
+		LegacyStreamID   string                      `json:"StreamID"`
+		CamelStreamID    string                      `json:"streamId"`
+		Chunks           []pluginapi.HTTPStreamChunk `json:"chunks"`
+		LegacyChunks     []pluginapi.HTTPStreamChunk `json:"Chunks"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	statusCode := wire.StatusCode
+	if statusCode <= 0 {
+		statusCode = wire.LegacyStatusCode
+	}
+	if statusCode <= 0 {
+		statusCode = wire.CamelStatusCode
+	}
+	headers := wire.Headers
+	if headers == nil {
+		headers = wire.LegacyHeaders
+	}
+	streamID := wire.StreamID
+	if streamID == "" {
+		streamID = wire.LegacyStreamID
+	}
+	if streamID == "" {
+		streamID = wire.CamelStreamID
+	}
+	chunks := wire.Chunks
+	if chunks == nil {
+		chunks = wire.LegacyChunks
+	}
+	*r = rpcHostHTTPStreamResponseWire{
+		StatusCode: statusCode,
+		Headers:    headers,
+		StreamID:   streamID,
+		Chunks:     chunks,
+	}
+	return nil
 }
 
 type rpcHostHTTPStreamReadResponseWire struct {
