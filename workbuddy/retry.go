@@ -139,12 +139,15 @@ func buildFailoverPool(routedAuthID string, primaryStorage ...[]byte) *failoverP
 		if listAuthEntryDisabled(f) || f.AuthIndex == "" {
 			continue
 		}
-		if authEntryOnCooldown(f) {
-			continue
-		}
 		cand := &failoverCandidate{AuthID: f.AuthIndex, RecordID: f.ID, Aliases: []string{f.Name}}
 		if sa, err := authGetSource(f.AuthIndex); err == nil {
 			cand.Auth = sa
+		}
+		// Check cooldown after resolving the credential so a UID stored in the
+		// provider payload cannot be bypassed by a different host filename or
+		// core record ID.
+		if candidateOnCooldown(cand) {
+			continue
 		}
 		isRouted := false
 		if routedAuthID != "" {

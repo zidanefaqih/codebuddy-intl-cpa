@@ -210,6 +210,26 @@ func TestBuildFailoverPool_SkipsCooldown(t *testing.T) {
 	}
 }
 
+func TestBuildFailoverPool_SkipsCooldownByCredentialUID(t *testing.T) {
+	files := []pluginapi.HostAuthFileEntry{
+		testAuthEntry("runtime-primary", "record-primary", false),
+		testAuthEntry("runtime-peer", "record-peer", false),
+	}
+	creds := map[string]*storedAuth{
+		"runtime-primary": {Auth: storedTokens{Domain: "https://www.workbuddy.ai"}, Account: storedAccount{UID: "actual-primary"}},
+		"runtime-peer":    {Auth: storedTokens{Domain: "https://www.workbuddy.ai"}, Account: storedAccount{UID: "actual-peer"}},
+	}
+	stubAuthSources(t, files, creds)
+
+	markAuthCooldown("actual-peer", time.Now().Add(5*time.Minute))
+	defer resetAuthCooldown("actual-peer")
+
+	pool := buildFailoverPool("record-primary")
+	if len(pool.Others) != 0 {
+		t.Fatalf("credential-UID cooldown must exclude peer despite host aliases: %+v", pool.Others)
+	}
+}
+
 func TestBuildFailoverPool_SkipsUnresolvedPeerWhenRealmKnown(t *testing.T) {
 	files := []pluginapi.HostAuthFileEntry{
 		testAuthEntry("idx-global", "uid-global", false),
