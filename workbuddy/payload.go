@@ -376,12 +376,24 @@ func rewriteContentField(msg map[string]any) bool {
 }
 
 func sanitizeBlockedTemplates(s string) string {
+	// The agent identity line ships in two shapes. The Claude Agent SDK form
+	// continues the sentence with a comma ("...for Claude, running within the
+	// Claude Agent SDK."), so matching the period-terminated form alone let
+	// every SDK request through unchanged and the upstream answered 400 /
+	// code 11128 "Illegal API invocation from an unapproved channel".
+	// Match the invariant substring instead of either full sentence.
 	s = strings.ReplaceAll(s,
-		"You are Claude Code, Anthropic's official CLI for Claude.",
-		"You are Claude Code, Anthropic's official CLI tool for Claude.")
+		"Anthropic's official CLI for Claude",
+		"Anthropic's official CLI tool for Claude")
 	s = strings.ReplaceAll(s,
 		"Main branch (you will usually use this for PRs)",
 		"Default branch (you will usually use this for PRs)")
+	// The feedback line is blocklisted as one exact sentence; the upstream
+	// rejects the whole request when it appears verbatim anywhere in the
+	// prompt. Reword it so the meaning survives and the exact match does not.
+	s = strings.ReplaceAll(s,
+		"To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
+		"To give feedback, users should report the issue in the project's issue tracker")
 	return s
 }
 

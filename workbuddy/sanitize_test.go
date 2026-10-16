@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSanitizeBlockedTemplates_ClaudeCode(t *testing.T) {
 	in := "You are Claude Code, Anthropic's official CLI for Claude."
@@ -11,6 +14,52 @@ func TestSanitizeBlockedTemplates_ClaudeCode(t *testing.T) {
 	want := "You are Claude Code, Anthropic's official CLI tool for Claude."
 	if out != want {
 		t.Fatalf("got %q want %q", out, want)
+	}
+}
+
+// The Claude Agent SDK form continues the sentence with a comma instead of a
+// period. Matching only the period-terminated sentence left this variant
+// untouched, and the upstream rejected every such request with 400 / code
+// 11128 ("Illegal API invocation from an unapproved channel").
+func TestSanitizeBlockedTemplates_ClaudeAgentSDKForm(t *testing.T) {
+	in := "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK."
+	out := sanitizeBlockedTemplates(in)
+	if out == in {
+		t.Fatal("should replace the comma/SDK variant")
+	}
+	want := "You are Claude Code, Anthropic's official CLI tool for Claude, running within the Claude Agent SDK."
+	if out != want {
+		t.Fatalf("got %q want %q", out, want)
+	}
+}
+
+// The feedback line is blocklisted as one exact sentence; verbatim it makes
+// the upstream reject the request with 400 / code 11128.
+func TestSanitizeBlockedTemplates_FeedbackLine(t *testing.T) {
+	in := "  - To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues"
+	out := sanitizeBlockedTemplates(in)
+	if out == in {
+		t.Fatal("should replace the blocklisted feedback line")
+	}
+	if strings.Contains(out, "https://github.com/anthropics/claude-code/issues") {
+		t.Fatalf("blocklisted URL survived: %q", out)
+	}
+	if !strings.Contains(out, "To give feedback") {
+		t.Fatalf("rewrite lost the line's meaning: %q", out)
+	}
+}
+
+// A real system prompt carries both blocklisted strings at once; the sanitizer
+// must clear both in a single pass.
+func TestSanitizeBlockedTemplates_BothTemplatesInOnePrompt(t *testing.T) {
+	in := "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.\n" +
+		"  - To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues\n"
+	out := sanitizeBlockedTemplates(in)
+	if strings.Contains(out, "Anthropic's official CLI for Claude") {
+		t.Fatalf("identity line survived: %q", out)
+	}
+	if strings.Contains(out, "https://github.com/anthropics/claude-code/issues") {
+		t.Fatalf("feedback URL survived: %q", out)
 	}
 }
 

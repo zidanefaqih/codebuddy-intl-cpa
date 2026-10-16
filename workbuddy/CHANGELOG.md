@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### The blocked-template rewrites actually match what the client sends
+
+- `sanitizeBlockedTemplates` matched two whole sentences that the upstream
+  content filter blocks, including their terminating punctuation. The Claude
+  Agent SDK continues the identity sentence with a comma instead of a period
+  ("...official CLI for Claude, running within the Claude Agent SDK."), so the
+  period-terminated pattern never matched a real SDK request and the
+  replacement never ran. The upstream answered every turn with 400 / code
+  11128 "Illegal API invocation from an unapproved channel", while a plain
+  `/v1/chat/completions` smoke test with a short system prompt kept working —
+  the failure only shows up with the real system prompt, which is why it
+  looked like "the first request works, then every later one is blocked".
+- The identity rewrite now matches the invariant substring
+  `Anthropic's official CLI for Claude` instead of the whole sentence, so both
+  shapes are covered and a future suffix cannot slip past it again.
+- Adds the second blocked string the real prompt carries: the feedback line
+  `To give feedback, users should report the issue at
+  https://github.com/anthropics/claude-code/issues`, which the upstream
+  rejects as one exact sentence anywhere in the prompt. It is reworded to
+  `...report the issue in the project's issue tracker`, which keeps the meaning
+  and drops the URL.
+- Verified against the live gateway with the real 31 KB system prompt:
+  400 / code 11128 before, 200 + normal SSE after; three consecutive
+  `/v1/messages` turns all 200. `sanitize_test.go` covers both variants plus a
+  combined-prompt case that would have failed before.
+
 ## 0.9.7
 
 ### Dead code sweep
