@@ -163,6 +163,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/models/refresh", Description: "Re-fetch the upstream model catalog for every account in the realm (body: {realm}). Cheap console GETs, no chat credits."},
 			{Method: http.MethodPost, Path: base + "/models/test", Description: "Live-test one model against the upstream with the selected account (body: {realm, auth, model}). Returns status, served model, tokens, credit."},
 			{Method: http.MethodGet, Path: base + "/update/check", Description: "Plugin update status vs the GitHub release registry (query: refresh=1, seen=<ver>). Silent fail."},
+			{Method: http.MethodPost, Path: base + "/oauth/region", Description: "Choose which realm issues the OAuth login URL (body: {region: \"intl\"|\"cn\"}; empty body reads the current value). Intl issues on www.codebuddy.ai (stays on .ai), CN on copilot.tencent.com."},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: pluginMenuName, Description: pluginPanelBrand + " dashboard: credits, check-in, plan, import."},
@@ -251,6 +252,15 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleModelsTest(req)))
 	case req.Method == http.MethodGet && path == base+"/update/check":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleUpdateCheck(req)))
+	case req.Method == http.MethodPost && path == base+"/oauth/region":
+		// An unknown region is a client error: answer 400 with the same
+		// {"error": "..."} body the panel already reads.
+		out := handleOAuthRegionConfig(req)
+		status := http.StatusOK
+		if out["error"] != nil {
+			status = http.StatusBadRequest
+		}
+		return okEnvelope(mgmtJSONResponse(status, out))
 	}
 	return okEnvelope(mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "not found: " + path}))
 }

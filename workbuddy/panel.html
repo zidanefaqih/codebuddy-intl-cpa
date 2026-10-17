@@ -456,6 +456,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button class="sec" onclick="reportAll(this)" title="为今天还没点亮的国际账号立即发送 report；已点亮会跳过" data-i18n-title="为今天还没点亮的国际账号立即发送 report；已点亮会跳过"><span data-i18n="全部报告">全部报告</span></button>
     <label class="toggle" title="仅限国内账号，每日 09:00 / 21:00 自动签到" data-i18n-title="仅限国内账号，每日 09:00 / 21:00 自动签到"><input type="checkbox" id="autoToggle" onchange="toggleAuto(this.checked)"> <span data-i18n="自动签到（国内）">自动签到（国内）</span></label>
     <label class="toggle" title="国际账号每日运行 4 次（08:00/12:00/16:00/20:00），点亮活跃日后次日可获得 30 积分奖励包" data-i18n-title="国际账号每日运行 4 次（08:00/12:00/16:00/20:00），点亮活跃日后次日可获得 30 积分奖励包"><input type="checkbox" id="bonusToggle" onchange="toggleBonus(this.checked)"> <span data-i18n="每日奖励（国际）">每日奖励（国际）</span></label>
+    <label class="language-control" title="OAuth 登录由哪个区域签发：国际 = codebuddy.ai（国际账号，登录页停留在 .ai）；国内 = copilot.tencent.com（会跳转到 .cn）" data-i18n-title="OAuth 登录由哪个区域签发：国际 = codebuddy.ai（国际账号，登录页停留在 .ai）；国内 = copilot.tencent.com（会跳转到 .cn）"><span data-i18n="登录区域">登录区域</span><select id="regionSel" onchange="setRegion(this.value)"><option value="intl" data-i18n="国际（codebuddy.ai）">国际（codebuddy.ai）</option><option value="cn" data-i18n="国内（copilot.tencent.com）">国内（copilot.tencent.com）</option></select></label>
     <span class="toggle" id="svtime"></span>
     <span style="flex:1"></span>
     <button type="button" class="sec newbtn" id="btnGlobal" onclick="mmOpen('global')"><span data-i18n="⚙ 国际模型">⚙ 国际模型</span><span class="pill">NEW</span></button>
@@ -864,6 +865,12 @@ const PANEL_EN = {
   "自动签到（国内）": "Auto check-in (CN)",
   "国际账号每日运行 4 次（08:00/12:00/16:00/20:00），点亮活跃日后次日可获得 30 积分奖励包": "Global accounts, four times daily (08:00/12:00/16:00/20:00). An active day earns a 30-credit bonus pack the following day.",
   "每日奖励（国际）": "Daily bonus (Global)",
+  "登录区域": "Login region",
+  "OAuth 登录由哪个区域签发：国际 = codebuddy.ai（国际账号，登录页停留在 .ai）；国内 = copilot.tencent.com（会跳转到 .cn）": "Which realm issues the OAuth login URL: Global = codebuddy.ai (the login page stays on .ai); CN = copilot.tencent.com (redirects to .cn)",
+  "国际（codebuddy.ai）": "Global (codebuddy.ai)",
+  "国内（copilot.tencent.com）": "CN (copilot.tencent.com)",
+  "登录区域：国际已生效 ✅": "Login region: Global active ✅",
+  "登录区域：国内已生效 ✅": "Login region: CN active ✅",
   "表格": "Table",
   "卡片": "Cards",
   "搜索账号 / 地址": "Search accounts / address",
@@ -2038,6 +2045,7 @@ async function load(force, btn){
       : await api("/accounts");
     document.getElementById("autoToggle").checked=!!d.checkin_auto;
     var _bt=document.getElementById("bonusToggle"); if(_bt) _bt.checked=!!d.daily_bonus;
+    var _rs=document.getElementById("regionSel"); if(_rs) _rs.value=(d.oauth_region==="cn")?"cn":"intl";
     lastServerTime=d.server_time||"";
     document.getElementById("svtime").textContent=tr("服务器时间 ")+lastServerTime;
     if(d.error){
@@ -2206,6 +2214,13 @@ async function toggleAuto(on){
 }
 async function toggleBonus(on){
   try{const d=await api("/dailybonus/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:on})});toast(tr("每日奖励")+(d.daily_bonus?tr("已开启 ✅"):tr("已关闭 ⏸")),"ok")}catch(e){toast(tr("设置失败"),"err",e.message)}
+}
+async function setRegion(v){
+  try{
+    const d=await api("/oauth/region",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({region:v})});
+    if(d.error){toast(tr("设置失败"),"err",d.error);return}
+    toast(d.oauth_region==="cn"?tr("登录区域：国内已生效 ✅"):tr("登录区域：国际已生效 ✅"),"ok");
+  }catch(e){toast(tr("设置失败"),"err",e.message)}
 }
 function openImportModal(){
   const m=document.getElementById("importModal");

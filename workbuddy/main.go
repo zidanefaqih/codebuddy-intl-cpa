@@ -91,12 +91,22 @@ const (
 	originReferer       = "https://www.codebuddy.cn"
 	originRefererGlobal = "https://www.codebuddy.ai"
 
-	// CN endpoint aliases (login / chat / models). upstreamBaseCN is the only
+	// Login OAuth endpoints. The login state must be issued by the realm that
+	// owns the account, so there is no single fixed login URL: these paths are
+	// combined with the realm base in loginEndpointsForRegion.
+	//
+	// CN issues on copilot.tencent.com with platform=CLI (unchanged). Intl
+	// issues on www.codebuddy.ai with platform=ide — that host answers with an
+	// authUrl on its own login page, whereas copilot.tencent.com/login redirects
+	// the browser to codebuddy.cn and strands an Intl account mid-flow (#5).
+	loginAuthStatePathCN   = "/v2/plugin/auth/state?platform=CLI"
+	loginAuthStatePathIntl = "/v2/plugin/auth/state?platform=ide"
+	loginAcctPath          = "/v2/plugin/login/account?state="
+	loginTokenPath         = "/v2/plugin/auth/token?state="
+
+	// Remaining CN endpoint aliases (chat / models). upstreamBaseCN is the only
 	// CN base; Global has its own upstreamBaseGlobal. No "upstreamBase" legacy
 	// alias — removed in v0.6.31 dead-code sweep.
-	endpointAuthState    = upstreamBaseCN + "/v2/plugin/auth/state?platform=CLI"
-	endpointLoginAcct    = upstreamBaseCN + "/v2/plugin/login/account?state="
-	endpointAuthToken    = upstreamBaseCN + "/v2/plugin/auth/token?state="
 	endpointTokenRefresh = upstreamBaseCN + "/v2/plugin/auth/token/refresh"
 	endpointChat         = upstreamBaseCN + "/v2/chat/completions"
 	endpointModels       = upstreamBaseCN + "/console/enterprises/personal/models"
@@ -110,6 +120,52 @@ const (
 type loginCtx struct {
 	client  *http.Client
 	expires time.Time
+	// endpoints is the realm set that issued this state. Polling must target
+	// the same gateway: a state minted by one issuer is meaningless to the
+	// other, and login/account is realm-scoped.
+	endpoints loginEndpoints
+}
+
+// loginBaseCN / loginBaseGlobal mirror upstreamBaseCN / upstreamBaseGlobal for
+// the login flow as vars so tests can point it at an httptest server — the same
+// override pattern billingBase uses.
+var (
+	loginBaseCN     = upstreamBaseCN
+	loginBaseGlobal = upstreamBaseGlobal
+)
+
+// loginEndpoints is one realm's OAuth login endpoint set plus the Origin the
+// issuer's gateway expects.
+type loginEndpoints struct {
+	region    string
+	authState string
+	authToken string // ?state= is appended by the caller
+	loginAcct string
+	origin    string
+}
+
+// loginEndpointsForRegion resolves the issuer for a login region.
+//
+// Unknown regions resolve to Intl, never to CN: issuing on the CN host is
+// exactly what makes an Intl login impossible, so a missing or malformed region
+// must not fall back onto it.
+func loginEndpointsForRegion(region string) loginEndpoints {
+	if normalizeOAuthRegion(region) == oauthRegionCN {
+		return loginEndpoints{
+			region:    oauthRegionCN,
+			authState: loginBaseCN + loginAuthStatePathCN,
+			authToken: loginBaseCN + loginTokenPath,
+			loginAcct: loginBaseCN + loginAcctPath,
+			origin:    originReferer,
+		}
+	}
+	return loginEndpoints{
+		region:    oauthRegionIntl,
+		authState: loginBaseGlobal + loginAuthStatePathIntl,
+		authToken: loginBaseGlobal + loginTokenPath,
+		loginAcct: loginBaseGlobal + loginAcctPath,
+		origin:    originRefererGlobal,
+	}
 }
 
 var (
@@ -380,6 +436,7 @@ func wbRegistration() registration {
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional CPAMP admin key override. Prefer auto-detect from env CPAMP_ADMIN_KEY / USAGE_REPORT_KEY or secret file /run/secrets/cpamp_admin_key."},
 				{Name: "self_url", Type: pluginapi.ConfigFieldTypeString, Description: "Base URL of this CPA host's management API used for the post-save model-registry live reload (default http://127.0.0.1:8317; also env WB_SELF_URL). Set the actual port on non-default deployments."},
 				{Name: "mm_live_reload", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Trigger a host model-registry reload after saving Model Manager settings so /v1/models updates without a CPA restart (default true)."},
+				{Name: "oauth_region", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{oauthRegionIntl, oauthRegionCN}, Description: "Which realm issues the OAuth login URL (default intl). intl issues on www.codebuddy.ai and keeps the login page on .ai; cn issues on copilot.tencent.com and serves the .cn login page. Also env WB_OAUTH_REGION."},
 			},
 		},
 		Capabilities: registrationCapability{

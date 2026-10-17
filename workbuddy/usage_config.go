@@ -67,7 +67,62 @@ var (
 	// set mm_live_reload: false in plugin config to disable.
 	liveReload   = true
 	liveReloadMu sync.RWMutex
+
+	// oauthRegion selects which realm issues the OAuth login URL.
+	// Config key oauth_region (intl | cn), env WB_OAUTH_REGION. Default intl:
+	// the plugin targets Intl accounts, and a state issued on the CN host hands
+	// the browser a copilot.tencent.com login page that redirects to
+	// codebuddy.cn — the flow this plugin could never finish (issue #5).
+	oauthRegion   = oauthRegionIntl
+	oauthRegionMu sync.RWMutex
 )
+
+// OAuth login regions. The login state must be issued by the realm that owns
+// the account being added, so the region is carried through start → poll; see
+// loginEndpointsForRegion.
+const (
+	oauthRegionIntl = "intl"
+	oauthRegionCN   = "cn"
+)
+
+// normalizeOAuthRegion maps user input onto a known region. Anything
+// unrecognised resolves to Intl, never to CN: the CN issuer is the path that
+// strands the plugin's target (Intl) audience, so a typo must not fall back
+// onto it.
+func normalizeOAuthRegion(v string) string {
+	switch strings.ToLower(strings.Trim(strings.TrimSpace(v), `"'`)) {
+	case oauthRegionCN, "cn-domain", "china", "tencent", "copilot":
+		return oauthRegionCN
+	default:
+		return oauthRegionIntl
+	}
+}
+
+// oauthRegionValue returns the configured login region.
+func oauthRegionValue() string {
+	oauthRegionMu.RLock()
+	defer oauthRegionMu.RUnlock()
+	return oauthRegion
+}
+
+// setOAuthRegionRuntime applies a region chosen in the panel. Runtime-only,
+// with the same contract as checkin_auto / daily_bonus: the CPA host exposes no
+// plugin-config write callback, so the value from config_yaml wins again on
+// restart. Reports ok=false for a value it does not recognise so the panel can
+// surface an error instead of silently keeping the old region.
+func setOAuthRegionRuntime(v string) (region string, ok bool) {
+	raw := strings.ToLower(strings.Trim(strings.TrimSpace(v), `"'`))
+	switch raw {
+	case oauthRegionIntl, oauthRegionCN, "global", "international", "china", "tencent", "copilot":
+	default:
+		return oauthRegionValue(), false
+	}
+	next := normalizeOAuthRegion(raw)
+	oauthRegionMu.Lock()
+	oauthRegion = next
+	oauthRegionMu.Unlock()
+	return next, true
+}
 
 // defaultSelfURL targets the standard production CPA management port.
 const defaultSelfURL = "http://127.0.0.1:8317"
@@ -110,6 +165,7 @@ func configure(raw []byte) {
 	nextMgmtKey := ""
 	nextSelfURL := ""
 	nextLiveReload := true
+	nextOAuthRegion := ""
 
 	cfgURL, cfgKey := "", ""
 	if len(raw) > 0 {
@@ -159,6 +215,10 @@ func configure(raw []byte) {
 					v = strings.Trim(v, "\"'")
 					nextDailyBonusAuto = v == "true" || v == "1" || v == "yes" || v == "on"
 				}
+				if strings.HasPrefix(line, "oauth_region:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "oauth_region:"))
+					nextOAuthRegion = strings.Trim(v, "\"'")
+				}
 			}
 		}
 	}
@@ -203,6 +263,17 @@ func configure(raw []byte) {
 	liveReloadMu.Lock()
 	liveReload = nextLiveReload
 	liveReloadMu.Unlock()
+
+	// oauth_region: config_yaml > env WB_OAUTH_REGION > default (intl). The
+	// region decides which realm issues the login URL; see
+	// loginEndpointsForRegion. An unrecognised value resolves to intl, never to
+	// cn: the CN issuer is what strands an Intl account (issue #5).
+	if nextOAuthRegion == "" {
+		nextOAuthRegion = strings.TrimSpace(os.Getenv("WB_OAUTH_REGION"))
+	}
+	oauthRegionMu.Lock()
+	oauthRegion = normalizeOAuthRegion(nextOAuthRegion)
+	oauthRegionMu.Unlock()
 
 	resolveUsageReport(cfgURL, cfgKey)
 	ensureScheduler()

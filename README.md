@@ -229,7 +229,24 @@ either.
   checking rows and pressing **Refresh data** refreshes those rows.
 - Missing data renders as `—`. The panel never claims a state it has not read.
 
-### 8. Inherited from the original plugin
+### 8. OAuth login region (Global / CN)
+
+The OAuth button issues its login state on the realm picked in the toolbar's **Login region**
+selector (default **Global**):
+
+- **Global (codebuddy.ai)** — the login URL is `https://www.codebuddy.ai/login?platform=ide&state=…`,
+  so the page stays on `.ai` and an Intl account can finish the flow.
+- **CN (copilot.tencent.com)** — the CN issuer, unchanged (`platform=CLI`). Pick it before
+  logging in a CN account.
+
+The issuer is not cosmetic: the login state is realm-scoped. A state minted on
+`copilot.tencent.com` opens a login page that redirects to `codebuddy.cn`, where an Intl
+account cannot complete (issue #5), and a `.cn` page rejects a state minted on `.ai`
+(HTTP 400). The choice is an ordinary plugin setting — `oauth_region: intl|cn` under
+`plugins.configs.workbuddy`, env `WB_OAUTH_REGION`, or the panel selector, which writes it at
+runtime like the check-in / daily-bonus toggles (the config value wins again after a restart).
+
+### 9. Inherited from the original plugin
 
 Multi-account OAuth login, dynamic model list, chat executor, Global one-time 250-credit
 expert trial (14 days, once per account), credit lifecycle (disable CN / delete Global when

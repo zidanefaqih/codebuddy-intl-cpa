@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.9.8 (unreleased)
+
+### Intl OAuth login completes again — the issuer is chosen by realm (issue #5)
+
+- **Login no longer hardcodes the CN issuer.** `handleStartLogin` issued the state on
+  `copilot.tencent.com/v2/plugin/auth/state?platform=CLI` unconditionally, and that issuer's
+  `authUrl` is served by `copilot.tencent.com/login` — a page that redirects the browser to
+  `codebuddy.cn`, where a Global (Intl) account cannot finish the flow. Intl logins now issue
+  on `www.codebuddy.ai/v2/plugin/auth/state?platform=ide`, whose `authUrl` stays on `.ai`.
+  Verified against production on 2026-10-17: the `.ai` state endpoint answers with
+  `https://www.codebuddy.ai/login?platform=ide&state=…`, and `/v2/plugin/auth/token` +
+  `/v2/plugin/login/account` answer on that host as well (token: `code 11217 login ing` while
+  pending; account: 401 until the bearer exists).
+- **The realm is carried through the flow.** The poll (token + account) now targets the
+  gateway that minted the state instead of a fixed host, and both requests present the
+  issuing realm's `Origin`/`Referer` — `commonHeaders()` hardcodes the CN pair, which is not
+  the browser request the Intl gateway expects. The start response keeps `logo` and adds
+  `region` to its metadata.
+- **`oauth_region` selects the issuer** (`intl` default, `cn`; env `WB_OAUTH_REGION`; the
+  panel's toolbar selector writes it at runtime, with the same contract as the check-in /
+  daily-bonus toggles — the value from `config.yaml` wins again after a restart). Unknown
+  values resolve to `intl`: the CN issuer is exactly what strands an Intl account, so a typo
+  must not fall back onto it. CN logins are unchanged (`platform=CLI`, `copilot.tencent.com`).
+- **`POST /v0/management/plugins/workbuddy/oauth/region`** reads (`{}`) or sets
+  (`{"region":"intl"|"cn"}`) the region; an unknown region answers 400 with the panel's usual
+  `{"error": …}` body and leaves the region untouched.
+- **Tests:** `oauth_login_test.go` drives both realms against `httptest` issuers — the Intl
+  start must hand back a `codebuddy.ai` login page and contact only the Intl host, the poll
+  must hit the issuer of the state (token + account) for either realm, and the other realm's
+  issuer must stay untouched. Plus the origin-header rule, the Intl fallback, the
+  `config.yaml` → runtime path (env fallback, junk value) and the management route.
 ## 0.9.7
 
 ### Dead code sweep

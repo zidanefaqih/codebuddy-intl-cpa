@@ -302,6 +302,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 		"accounts":       out,
 		"checkin_auto":   auto,
 		"daily_bonus":    dailyBonusEnabled(),
+		"oauth_region":   oauthRegionValue(),
 		"lifecycle_auto": lifecycleEnabled(),
 		"schedule":       []string{"09:00", "21:00"},
 		"server_time":    time.Now().Format("2006-01-02 15:04:05"),

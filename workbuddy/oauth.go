@@ -67,9 +67,14 @@ func doJSON(client *http.Client, method, fullURL string, headers func(*http.Requ
 
 func handleStartLogin(raw []byte) ([]byte, error) {
 	client := newLoginClient()
-	data, _, err := doJSON(client, http.MethodPost, endpointAuthState, nil, bytes.NewReader([]byte("{}")))
+	// The realm decides both who issues the state and which login page the user
+	// lands on: the CN issuer's authUrl is served by copilot.tencent.com, whose
+	// login page redirects to codebuddy.cn (issue #5), while the Intl issuer's
+	// stays on www.codebuddy.ai.
+	ep := loginEndpointsForRegion(oauthRegionValue())
+	data, _, err := doJSON(client, http.MethodPost, ep.authState, func(r *http.Request) { loginHeaders(r, ep) }, bytes.NewReader([]byte("{}")))
 	if err != nil {
-		return nil, fmt.Errorf("auth state failed: %w", err)
+		return nil, fmt.Errorf("auth state failed (%s issuer): %w", ep.region, err)
 	}
 	var st authStateData
 	_ = json.Unmarshal(data, &st)
@@ -77,13 +82,13 @@ func handleStartLogin(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("auth state: missing state or authUrl — please restart the login flow")
 	}
 	startLoginJanitor()
-	loginStates.Store(st.State, &loginCtx{client: client, expires: time.Now().Add(loginTTL)})
+	loginStates.Store(st.State, &loginCtx{client: client, expires: time.Now().Add(loginTTL), endpoints: ep})
 	return okEnvelope(pluginapi.AuthLoginStartResponse{
 		Provider:  providerName,
 		URL:       st.AuthURL,
 		State:     st.State,
 		ExpiresAt: time.Now().Add(loginTTL).UTC(),
-		Metadata:  map[string]any{"logo": pluginLogoURL},
+		Metadata:  map[string]any{"logo": pluginLogoURL, "region": ep.region},
 	})
 }
 
@@ -105,6 +110,15 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 		loginStates.Delete(state)
 		return nil, fmt.Errorf("poll: login expired (5 min timeout) — please re-initiate login and complete within 5 minutes")
 	}
+	// Poll the gateway that issued this state. login/account is realm-scoped and
+	// the login state itself is meaningless to the other issuer, so the realm
+	// resolved at start time is authoritative here. A state stored by a
+	// pre-region build carries no endpoint set — resolve the current region for
+	// it rather than the compiled-in CN default.
+	ep := lc.endpoints
+	if ep.authToken == "" {
+		ep = loginEndpointsForRegion(oauthRegionValue())
+	}
 
 	// Single-shot poll per RPC: the host drives the polling cadence.
 	// auth/token is the authoritative login-status endpoint: the application
@@ -112,7 +126,7 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 	// with the token bundle once complete. login/account sits behind the
 	// openresty gateway and is rejected (401) until login finishes, so probe
 	// token first and only fetch account once we hold a bearer.
-	tokRaw, status, errTok := doJSON(lc.client, http.MethodGet, endpointAuthToken+state, nil, nil)
+	tokRaw, status, errTok := doJSON(lc.client, http.MethodGet, ep.authToken+state, func(r *http.Request) { loginHeaders(r, ep) }, nil)
 	if errTok != nil {
 		// Transport-level failures and 5xx are real errors, not "still waiting":
 		// surface them so the user sees a failure instead of polling until TTL.
@@ -136,10 +150,10 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 
 	var acct accountData
 	acctHeaders := func(r *http.Request) {
-		commonHeaders(r)
+		loginHeaders(r, ep)
 		r.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 	}
-	if acctRaw, _, errAcct := doJSON(lc.client, http.MethodGet, endpointLoginAcct+state, acctHeaders, nil); errAcct == nil {
+	if acctRaw, _, errAcct := doJSON(lc.client, http.MethodGet, ep.loginAcct+state, acctHeaders, nil); errAcct == nil {
 		_ = json.Unmarshal(acctRaw, &acct)
 	}
 
@@ -150,7 +164,7 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 			ExpiresAt:    time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second).Unix(),
 			Domain:       tok.Domain,
 		},
-		Account:  storedAccount(acct),
+		Account: storedAccount(acct),
 	}
 	loginStates.Delete(state)
 	return okEnvelope(pluginapi.AuthLoginPollResponse{
@@ -252,4 +266,40 @@ func toAuthDataForRefresh(sa *storedAuth, existing map[string]any, disabled bool
 	ad.FileName = "" // let host backfill original
 	ad.ID = ""       // let host compute from path (prevents ID mismatch dupes)
 	return ad
+}
+
+// loginHeaders applies the headers the issuing gateway expects. Origin/Referer
+// must match the realm that minted the state: commonHeaders() hardcodes the CN
+// pair, and an Intl gateway request carrying a codebuddy.cn origin is not the
+// browser request that state was issued for.
+func loginHeaders(req *http.Request, ep loginEndpoints) {
+	commonHeaders(req)
+	req.Header.Set("Origin", ep.origin)
+	req.Header.Set("Referer", ep.origin+"/")
+}
+
+// handleOAuthRegionConfig reads or sets which realm's OAuth issuer the login
+// flow uses (management API: POST /oauth/region with {"region":"intl"|"cn"}).
+//
+// Runtime-only, with the same contract as the checkin / daily-bonus toggles:
+// the CPA host exposes no plugin-config write callback, so oauth_region from
+// config.yaml takes over again on restart. An empty region reads the current
+// value; an unrecognised one is rejected instead of silently defaulting.
+func handleOAuthRegionConfig(req pluginapi.ManagementRequest) map[string]any {
+	var body struct {
+		Region string `json:"region"`
+	}
+	_ = json.Unmarshal(req.Body, &body)
+	if strings.TrimSpace(body.Region) == "" {
+		return map[string]any{"oauth_region": oauthRegionValue(), "persistent": false}
+	}
+	cur, ok := setOAuthRegionRuntime(body.Region)
+	if !ok {
+		return map[string]any{
+			"error":        "unknown region: expected \"intl\" or \"cn\"",
+			"oauth_region": cur,
+			"persistent":   false,
+		}
+	}
+	return map[string]any{"oauth_region": cur, "persistent": false}
 }
