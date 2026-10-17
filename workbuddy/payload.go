@@ -37,6 +37,8 @@ func prepareUpstreamBody(payload, original []byte, sa *storedAuth, upstreamModel
 	normalizeToolsInPlace(obj)
 
 	// 3. rewriteSystem: strip blocked Claude Code template phrases + force thinking.
+	// Recover original instruction roles before changing their text.
+	restoreResponsesDeveloperRoles(obj, original)
 	rewriteSystemInPlace(obj)
 
 	// 3b. normalizeDeveloper: CodeBuddy upstream rejects role=developer (code 11128).

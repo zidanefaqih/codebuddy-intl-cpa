@@ -454,6 +454,10 @@ func (e *upstreamStatusError) Error() string {
 	return fmt.Sprintf("upstream %d: %s", e.status, truncateRedacted(e.body, 200))
 }
 
+func (e *upstreamStatusError) StatusCode() int {
+	return e.status
+}
+
 func upstreamStatusOf(err error) (int, string) {
 	var ue *upstreamStatusError
 	if errors.As(err, &ue) {

@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Responses and SSE compatibility
+
+- Parse upstream SSE frames consistently for streamed and folded completions:
+  ignore heartbeat/progress/metadata events, join multiline data, and propagate
+  malformed completion JSON and explicit error events. Compact multiline JSON
+  before forwarding it as one `data:` line to cross-format translators.
+- Progress-only streams no longer count as a successful model response. Folded
+  completion detection requires choices rather than usage-only events.
+- Retain the original Responses request on the streaming path and restore
+  translated developer instruction roles by matching original text and order,
+  while retaining user messages, mixed content, and tool history.
+- Carry upstream HTTP status through executor error envelopes and send async
+  failures through the host stream error field instead of a completion payload.
+
 ## 0.9.7
 
 ### Dead code sweep

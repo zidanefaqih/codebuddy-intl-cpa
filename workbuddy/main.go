@@ -64,6 +64,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -197,7 +198,7 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 	}
 	raw, errHandle := handleMethod(C.GoString(method), requestBytes)
 	if errHandle != nil {
-		writeResponse(response, errorEnvelope("plugin_error", errHandle.Error()))
+		writeResponse(response, errorEnvelopeFromError(errHandle))
 		return 1
 	}
 	writeResponse(response, raw)
@@ -319,8 +320,9 @@ type envelope struct {
 }
 
 type envelopeError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	HTTPStatus int    `json:"http_status,omitempty"`
 }
 
 type identifierResponse struct {
@@ -882,12 +884,8 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	if sa.Account.UID != "" {
 		authUID = sa.Account.UID
 	}
-	body := req.Payload
-	if len(body) == 0 {
-		body = req.OriginalRequest
-	}
 	// Single-pass JSON rewrite (see handleExecExecute for the non-stream path).
-	body = prepareUpstreamBody(body, nil, sa, upstreamModel)
+	body := prepareUpstreamBody(req.Payload, req.OriginalRequest, sa, upstreamModel)
 	trace := newCacheTrace(req.Payload, req.OriginalRequest, body, req.Metadata, started)
 
 	headers := streamHeaders()
@@ -988,7 +986,7 @@ func collectStreamAttempt(body []byte, cand *failoverCandidate, sseFramed bool, 
 	reader := newHostStreamReader(stream)
 	if statusCode >= 400 {
 		errPayload, _ := io.ReadAll(reader)
-		return nil, statusCode, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(string(errPayload), 200))
+		return nil, statusCode, &upstreamStatusError{status: statusCode, body: string(errPayload)}
 	}
 	chunks, errAgg := aggregateSSEWithCollector(reader, sseFramed, collector)
 	if errAgg != nil {
@@ -1033,6 +1031,16 @@ func okEnvelope(v any) ([]byte, error) {
 
 func errorEnvelope(code, message string) []byte {
 	raw, _ := json.Marshal(envelope{OK: false, Error: &envelopeError{Code: code, Message: message}})
+	return raw
+}
+
+func errorEnvelopeFromError(err error) []byte {
+	pluginErr := &envelopeError{Code: "plugin_error", Message: redactSecrets(err.Error())}
+	var statusErr interface{ StatusCode() int }
+	if errors.As(err, &statusErr) {
+		pluginErr.HTTPStatus = statusErr.StatusCode()
+	}
+	raw, _ := json.Marshal(envelope{OK: false, Error: pluginErr})
 	return raw
 }
 
