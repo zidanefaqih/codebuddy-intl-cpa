@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // failoverCandidate is one eligible account.
@@ -452,6 +452,10 @@ type upstreamStatusError struct {
 
 func (e *upstreamStatusError) Error() string {
 	return fmt.Sprintf("upstream %d: %s", e.status, truncateRedacted(e.body, 200))
+}
+
+func (e *upstreamStatusError) StatusCode() int {
+	return e.status
 }
 
 func upstreamStatusOf(err error) (int, string) {

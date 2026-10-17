@@ -6,7 +6,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -18,9 +17,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // streamEmit pushes one chunk payload to the host stream. Returns an error if
@@ -35,13 +34,17 @@ func streamEmit(streamID string, payload []byte) error {
 	return err
 }
 
+// Separate the error callback so tests can inspect the host bridge envelope.
+var streamErrorEmitCall = hostCall
+
 func streamEmitError(streamID, message string) {
 	if streamID == "" {
 		return
 	}
-	// A-37: never emit raw upstream bodies that may contain Bearer/JWT.
-	errJSON, _ := json.Marshal(map[string]any{"error": map[string]any{"message": redactSecrets(message)}})
-	_ = streamEmit(streamID, errJSON)
+	// Errors must use the bridge's error field; cross-format translators can
+	// discard a JSON error payload because it has no completion choices.
+	body, _ := json.Marshal(map[string]any{"stream_id": streamID, "error": redactSecrets(message)})
+	_, _ = streamErrorEmitCall(pluginabi.MethodHostStreamEmit, body)
 }
 
 func streamClose(streamID string) {
@@ -176,32 +179,27 @@ func pumpAttempt(httpReq *http.Request, streamID string, sseFramed bool, request
 	defer stream.Close()
 	if statusCode >= 400 {
 		errPayload, _ := io.ReadAll(newHostStreamReader(stream))
-		return false, statusCode, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(string(errPayload), 200))
+		return false, statusCode, &upstreamStatusError{status: statusCode, body: string(errPayload)}
 	}
 	emitted := false
-	scanner := bufio.NewScanner(newHostStreamReader(stream))
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		content := stripDataPrefix(scanner.Text())
-		if content == "" || content == "[DONE]" {
-			continue
-		}
+	err = scanCompletionSSE(newHostStreamReader(stream), func(content string) error {
 		collector.feed(content)
 		cleaned := cleanChunkJSON(content)
 		if cleaned == "" {
-			continue
+			return nil
 		}
 		if sseFramed {
 			cleaned = "data: " + cleaned
 		}
 		if err := streamEmitSource(streamID, []byte(cleaned)); err != nil {
 			// Client disconnected / host closed stream — abort.
-			return emitted, 0, fmt.Errorf("stream_emit: %w", err)
+			return fmt.Errorf("stream_emit: %w", err)
 		}
 		emitted = true
-	}
-	if err := scanner.Err(); err != nil {
-		return emitted, 0, fmt.Errorf("upstream stream read error: %w", err)
+		return nil
+	})
+	if err != nil {
+		return emitted, 0, err
 	}
 	if !emitted {
 		// The upstream closed without forwarding a single chunk to the client
@@ -240,30 +238,22 @@ func clientNeedsSSEFrame(metadata map[string]any) bool {
 // failed. The collector, when non-nil, observes raw upstream chunks for usage
 // extraction.
 func aggregateSSEWithCollector(r io.Reader, sseFramed bool, collector *sseUsageCollector) ([]pluginapi.ExecutorStreamChunk, error) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	var chunks []pluginapi.ExecutorStreamChunk
-	for scanner.Scan() {
-		content := stripDataPrefix(scanner.Text())
-		if content == "" || content == "[DONE]" {
-			continue
-		}
+	err := scanCompletionSSE(r, func(content string) error {
 		if collector != nil {
 			collector.feed(content)
 		}
 		cleaned := cleanChunkJSON(content)
 		if cleaned == "" {
-			continue
+			return nil
 		}
 		if sseFramed {
 			cleaned = "data: " + cleaned
 		}
 		chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: []byte(cleaned)})
-	}
-	if err := scanner.Err(); err != nil {
-		return chunks, fmt.Errorf("upstream stream read error: %w", err)
-	}
-	return chunks, nil
+		return nil
+	})
+	return chunks, err
 }
 
 // cleanChunkJSON strips only the known-problematic empty tool-call shells
@@ -350,19 +340,10 @@ func aggregateCompletionCounted(r io.Reader, model string) ([]byte, bool, error)
 	// so the folded completion holds whole calls.
 	toolCalls := map[int]map[string]any{}
 	var toolOrder []int
-	var scanErr error
-
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		data := stripDataPrefix(scanner.Text())
-		if data == "" || data == "[DONE]" {
-			continue
-		}
-		sawData = true
+	scanErr := scanCompletionSSE(r, func(data string) error {
 		var chunk map[string]any
 		if json.Unmarshal([]byte(data), &chunk) != nil {
-			continue
+			return fmt.Errorf("invalid upstream completion SSE JSON")
 		}
 		if v, ok := chunk["id"].(string); ok && v != "" {
 			respID = v
@@ -377,6 +358,9 @@ func aggregateCompletionCounted(r io.Reader, model string) ([]byte, bool, error)
 			usage = v
 		}
 		choices, _ := chunk["choices"].([]any)
+		if len(choices) > 0 {
+			sawData = true
+		}
 		for _, c := range choices {
 			choice, _ := c.(map[string]any)
 			if delta, ok := choice["delta"].(map[string]any); ok {
@@ -413,16 +397,14 @@ func aggregateCompletionCounted(r io.Reader, model string) ([]byte, bool, error)
 				finish = v
 			}
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		scanErr = err
-	}
+		return nil
+	})
 	// A mid-stream read failure means the folded completion is truncated. The
 	// host discards the payload entirely when the plugin returns an error
 	// (sdk/api/handlers executeWithPluginExecutor), so fail fast here instead
 	// of assembling a partial completion nobody can safely consume.
 	if scanErr != nil {
-		return nil, sawData, fmt.Errorf("upstream stream read error: %w", scanErr)
+		return nil, sawData, scanErr
 	}
 
 	message := map[string]any{"role": firstNonEmpty(role, "assistant"), "content": content}

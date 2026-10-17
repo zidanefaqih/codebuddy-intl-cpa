@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // wbAccount is one row of the dashboard.
@@ -373,18 +373,18 @@ func summarizeCredits(accounts []wbAccount) map[string]any {
 // -----------------------------------------------------------------------------
 
 func servePanel(sub string) []byte {
-	if sub != "" && sub != "/" && sub != "/panel" && sub != "/panel.html" {
-		return []byte("<h1>404</h1>")
+	if sub == "" || sub == "/" || sub == "/panel" || sub == "/panel.html" {
+		return unifiedPanelHTML
 	}
-	if pluginPanelBrand == "CodeBuddy" {
-		return panelHTML
+	if sub == "/codebuddy" {
+		if pluginPanelBrand == "CodeBuddy" {
+			return panelHTML
+		}
+		body := strings.ReplaceAll(string(panelHTML), "CodeBuddy", pluginPanelBrand)
+		body = strings.ReplaceAll(body, "/v0/management/plugins/workbuddy", "/v0/management/plugins/"+pluginRouteID)
+		return []byte(body)
 	}
-	// Keep the production panel asset shared while giving isolated test builds
-	// an unmistakable label in the browser and sidebar.
-	body := string(panelHTML)
-	body = strings.ReplaceAll(body, "CodeBuddy", pluginPanelBrand)
-	body = strings.ReplaceAll(body, "/v0/management/plugins/workbuddy", "/v0/management/plugins/"+pluginRouteID)
-	return []byte(body)
+	return []byte("<h1>404</h1>")
 }
 
 //go:embed panel.html

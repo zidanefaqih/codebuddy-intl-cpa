@@ -24,13 +24,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // requestUsageRecord is one JSONL line: metadata of a single request.
 // Timestamp is RFC3339 UTC.
 type requestUsageRecord struct {
+	Channel          string             `json:"channel,omitempty"`
 	Timestamp        string             `json:"timestamp"`
 	AuthIndex        string             `json:"auth_index"`
 	AuthID           string             `json:"auth_id,omitempty"`
@@ -64,7 +65,8 @@ type dayAgg struct {
 }
 
 type requestUsageStore struct {
-	mu sync.Mutex
+	mu        sync.Mutex
+	logPrefix string // empty for the original CodeBuddy journal
 
 	dir  string // data dir, e.g. /root/.cli-proxy-api (host bind: ~/cliproxyapi/auths)
 	path string // current JSONL file
@@ -75,6 +77,13 @@ type requestUsageStore struct {
 }
 
 var usageStore = &requestUsageStore{perDay: map[string]map[string]*dayAgg{}}
+
+func (s *requestUsageStore) filePrefix() string {
+	if s.logPrefix != "" {
+		return s.logPrefix
+	}
+	return strings.TrimSuffix(usageLogBaseName, ".jsonl")
+}
 
 // usageLogDir resolves the directory that holds the persistent JSONL.
 //  1. env WORKBUDDY_DATA_DIR (explicit override)
@@ -121,13 +130,13 @@ func (s *requestUsageStore) ensureLogDir() string {
 		return ""
 	}
 	s.dir = dir
-	s.path = filepath.Join(dir, usageLogBaseName)
+	s.path = filepath.Join(dir, s.filePrefix()+".jsonl")
 	return s.path
 }
 
 // jsonlFiles returns current + rotated files, oldest first.
 func (s *requestUsageStore) jsonlFiles() []string {
-	matches, _ := filepath.Glob(filepath.Join(s.dir, "request-usage-*.jsonl"))
+	matches, _ := filepath.Glob(filepath.Join(s.dir, s.filePrefix()+"-*.jsonl"))
 	files := make([]string, 0, len(matches)+1)
 	if s.path != "" {
 		files = append(files, s.path)
@@ -228,11 +237,11 @@ func (s *requestUsageStore) record(rec requestUsageRecord) {
 	// Rotate when the current file exceeds the cap (keep the old file).
 	ts, _ := time.Parse(time.RFC3339Nano, rec.Timestamp)
 	if fi, err := os.Stat(path); err == nil && fi.Size() > usageLogMaxBytes {
-		rot := filepath.Join(s.dir, "request-usage-"+ts.Local().Format("2006-01")+".jsonl")
+		rot := filepath.Join(s.dir, s.filePrefix()+"-"+ts.Local().Format("2006-01")+".jsonl")
 		if _, err := os.Stat(rot); err == nil {
 			// A second rotation in the same month must not overwrite the first
 			// forensic log (fingerprints make the cap reachable sooner).
-			rot = filepath.Join(s.dir, "request-usage-"+ts.Local().Format("2006-01")+".part-"+ts.UTC().Format("20060102T150405.000000000")+".jsonl")
+			rot = filepath.Join(s.dir, s.filePrefix()+"-"+ts.Local().Format("2006-01")+".part-"+ts.UTC().Format("20060102T150405.000000000")+".jsonl")
 		}
 		if rot != path {
 			_ = os.Rename(path, rot)

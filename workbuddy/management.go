@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // billingBase hosts the Buddy-gas-station check-in and resource-package APIs.
@@ -200,6 +200,9 @@ func handleManagement(raw []byte) ([]byte, error) {
 	}
 
 	base := loadedManagementBasePath() + "/plugins/" + pluginRouteID
+	if out, handled, err := handleUnifiedManagement(req, base); handled {
+		return out, err
+	}
 	switch {
 	case req.Method == http.MethodGet && path == base+"/accounts":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildDashboardEx(false, false)))

@@ -1,0 +1,526 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trae 账号管理</title>
+<style>
+/* Theme tokens aligned with CPA management panel (same approach as
+   codebuddy-intl-cpa): default :root = light; data-theme=white | dark;
+   embedded iframe syncs parent theme automatically. */
+:root{
+  --bg:#faf9f5;--card:#ffffff;--border:#e3e1db;--fg:#2d2a26;--mut:#6d6760;
+  --acc:#4c8dff;--on-acc:#ffffff;--ok:#10b981;--warn:#e0aa14;--err:#c65746;
+  --surface:#f0eee8;--surface-muted:#e9e6df;--btn-sec:#eef1f6;--btn-sec-hover:#e4e8ef;
+  --input-bg:#ffffff;--code-bg:#f3f4f6;--code-fg:#374151;--placeholder:rgba(109,103,96,.55);
+  --ok-soft:rgba(16,185,129,.10);--ok-border:rgba(16,185,129,.30);
+  --warn-soft:rgba(224,170,20,.12);--warn-border:rgba(224,170,20,.32);
+  --err-soft:rgba(198,87,70,.10);--err-border:rgba(198,87,70,.30);
+  --mut-soft:rgba(109,103,96,.12);--mut-border:rgba(109,103,96,.28);
+  --scrim:rgba(45,42,38,.35);--toast-shadow:0 10px 28px rgba(0,0,0,.12),0 0 0 1px rgba(0,0,0,.04);
+  --modal-shadow:0 24px 56px rgba(0,0,0,.18),0 0 0 1px rgba(0,0,0,.04);
+  --acc-ring:rgba(76,141,255,.18);--radius-md:12px;--radius-lg:16px;
+  color-scheme:light
+}
+:root[data-theme="white"]{
+  --bg:#f5f5f5;--card:#ffffff;--border:#e6e6e6;--fg:#1f1f1f;--mut:#707070;
+  --surface:#fafafa;--surface-muted:#efefef;--btn-sec:#f0f0f0;--btn-sec-hover:#e8e8e8;
+  --input-bg:#ffffff;--code-bg:#f3f4f6;--code-fg:#374151;--placeholder:rgba(112,112,112,.55);
+  --scrim:rgba(0,0,0,.32);--toast-shadow:0 10px 28px rgba(0,0,0,.10),0 0 0 1px rgba(0,0,0,.04);
+  --modal-shadow:0 24px 56px rgba(0,0,0,.16),0 0 0 1px rgba(0,0,0,.04);
+  color-scheme:light
+}
+:root[data-theme="dark"]{
+  --bg:#1e1d1b;--card:#26241f;--border:#3a3833;--fg:#ede9e3;--mut:#9a948c;
+  --acc:#4c8dff;--on-acc:#ffffff;--ok:#34d399;--warn:#f0c050;--err:#e07a6a;
+  --surface:#2f2d28;--surface-muted:#35332e;--btn-sec:#35332e;--btn-sec-hover:#3f3c36;
+  --input-bg:#1e1d1b;--code-bg:#35332e;--code-fg:#d6d1c9;--placeholder:rgba(154,148,140,.55);
+  --ok-soft:rgba(52,211,153,.12);--ok-border:rgba(52,211,153,.38);
+  --warn-soft:rgba(240,192,80,.14);--warn-border:rgba(240,192,80,.38);
+  --err-soft:rgba(224,122,106,.12);--err-border:rgba(224,122,106,.38);
+  --mut-soft:rgba(154,148,140,.16);--mut-border:rgba(154,148,140,.32);
+  --scrim:rgba(0,0,0,.55);--toast-shadow:0 10px 28px rgba(0,0,0,.55),0 0 0 1px rgba(255,255,255,.03);
+  --modal-shadow:0 24px 56px rgba(0,0,0,.45),0 0 0 1px rgba(255,255,255,.04);
+  --acc-ring:rgba(76,141,255,.28);
+  color-scheme:dark
+}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1100px;margin:0 auto;padding:24px 16px}
+h1{font-size:20px;margin:0 0 4px}.sub{color:var(--mut);font-size:13px;margin-bottom:20px}
+.bar{display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+button{background:var(--acc);color:var(--on-acc);border:0;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px}
+button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background:var(--btn-sec-hover)}
+button.done{background:var(--ok-soft);color:var(--ok);cursor:default}
+button:disabled{opacity:.5;cursor:default}
+.card,.summary{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md)}
+.card{padding:16px}
+.card h2{font-size:15px;margin:0 0 2px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.uid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:12px}
+.badge{font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border);white-space:nowrap}
+.badge.exhausted{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
+.badge.disabled{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border)}
+.badge.err{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+.loading{padding:40px;text-align:center;color:var(--mut)}
+.pb{margin:6px 0 4px}.pb-label{display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px}
+.pb-track{height:8px;border-radius:99px;background:var(--surface-muted);overflow:hidden}
+.pb-bar{height:100%;border-radius:99px;transition:width .4s}
+.pb-meta{font-size:12px;color:var(--mut);margin-top:6px}
+.actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.row{display:flex;justify-content:space-between;font-size:13px;padding:3px 0}
+.row .k{color:var(--mut)}.row .err{color:var(--err)}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--mut);border-top-color:transparent;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px;margin-right:6px}
+@keyframes sp{to{transform:rotate(360deg)}}
+/* summary strip */
+.summary{display:flex;gap:24px;flex-wrap:wrap;padding:14px 18px;margin-bottom:14px}
+.summary .it .k{font-size:12px;color:var(--mut)}
+.summary .it .v{font-size:18px;font-weight:600;font-variant-numeric:tabular-nums}
+/* usage table */
+.usage-sec{margin-top:18px}
+.summary-title{font-size:15px;font-weight:600;margin-bottom:10px}
+.usage-hd{display:flex;justify-content:space-between;align-items:flex-end;gap:14px;flex-wrap:wrap;margin-bottom:10px}
+.usage-grid{display:flex;gap:18px;flex-wrap:wrap}
+.usage-item .k{font-size:12px;color:var(--mut)}
+.usage-item .v{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
+.usage-filters{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
+.ftag{background:var(--surface);border:1px solid var(--border);color:var(--fg);border-radius:99px;padding:5px 12px;font-size:12px;cursor:pointer}
+.ftag.active{background:var(--acc);color:var(--on-acc);border-color:var(--acc)}
+.tbl-wrap{overflow:auto;border:1px solid var(--border);border-radius:8px}
+table{width:100%;border-collapse:collapse;white-space:nowrap;font-size:13px}
+th{text-align:left;color:var(--mut);font-weight:500;background:var(--surface)}
+td,th{padding:9px 12px;border-bottom:1px solid var(--border)}
+tr:last-child td{border-bottom:0}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.usage-meta{margin-top:10px;font-size:12px;color:var(--mut)}
+.usage-loading{padding:24px;text-align:center;color:var(--mut)}
+.ok{color:var(--ok)}.err{color:var(--err)}
+/* modal */
+.modal-mask{position:fixed;inset:0;background:var(--scrim);display:none;align-items:center;justify-content:center;z-index:50;padding:16px}
+.modal-mask.show{display:flex}
+.modal{background:var(--card);border-radius:var(--radius-lg);box-shadow:var(--modal-shadow);width:100%;max-width:560px}
+.modal-hd{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid var(--border)}
+.modal-hd h2{font-size:15px;margin:0}
+.modal-x{background:none;color:var(--mut);font-size:20px;padding:0 4px;border-radius:6px}
+.modal-bd{padding:16px 20px}
+.modal-ft{display:flex;justify-content:flex-end;gap:8px;padding:14px 20px;border-top:1px solid var(--border)}
+textarea{width:100%;min-height:150px;resize:vertical;background:var(--input-bg);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:10px;font:12px/1.5 ui-monospace,monospace}
+input[type=password],input[type=text]{background:var(--input-bg);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font:inherit}
+.field-input{flex:1;min-width:200px}
+.hint{font-size:12px;color:var(--mut)}
+code{background:var(--code-bg);color:var(--code-fg);border-radius:4px;padding:1px 5px;font-size:12px}
+a{color:var(--acc)}
+/* toasts */
+.toasts{position:fixed;bottom:20px;right:20px;display:flex;flex-direction:column;gap:8px;z-index:100}
+.toast{background:var(--card);border:1px solid var(--border);border-left:3px solid var(--ok);border-radius:10px;box-shadow:var(--toast-shadow);padding:10px 14px;min-width:220px;max-width:360px;opacity:0;transform:translateY(8px);transition:all .25s;cursor:pointer;font-size:13px}
+.toast.show{opacity:1;transform:none}
+.toast.err{border-left-color:var(--err)}
+.toast .t{font-weight:600}
+.toast .d{color:var(--mut);font-size:12px;margin-top:2px;white-space:pre-wrap}
+/* login card */
+#loginCard{display:none;margin-bottom:16px}
+#loginCard.show{display:block}
+.toggle{display:flex;gap:8px;align-items:center;color:var(--mut);font-size:13px}
+#svtime{margin-left:auto}
+@media(max-width:640px){.wrap{padding:16px 10px}#svtime{margin-left:0}}
+</style>
+<script>
+/* Early theme sync (before body paint): mirror CPA parent data-theme when
+   embedded; standalone falls back to prefers-color-scheme. */
+(function(){
+  var ATTR="data-theme";
+  function embedded(){try{return window.self!==window.top}catch(e){return false}}
+  function apply(t){var el=document.documentElement;if(t==="white"||t==="dark")el.setAttribute(ATTR,t);else el.removeAttribute(ATTR)}
+  function parentTheme(){if(!embedded())return null;try{var raw=window.parent.document.documentElement.getAttribute(ATTR);if(raw==="white"||raw==="dark")return raw;return "light"}catch(e){return null}}
+  function systemTheme(){try{return window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"}catch(e){return "light"}}
+  function sync(){apply(parentTheme()||systemTheme())}
+  sync();
+  window.__traeThemeSync=function(){
+    sync();
+    if(!embedded()){
+      try{var mq=window.matchMedia("(prefers-color-scheme: dark)");var on=function(){sync()};if(mq.addEventListener)mq.addEventListener("change",on);else if(mq.addListener)mq.addListener(on)}catch(e){}
+      return;
+    }
+    try{
+      var parentEl=window.parent.document.documentElement;
+      new MutationObserver(sync).observe(parentEl,{attributes:true,attributeFilter:[ATTR]});
+      window.addEventListener("storage",function(e){if(e.key==="cli-proxy-theme")sync()});
+    }catch(e){}
+  };
+})();
+</script>
+</head>
+<body>
+<div class="wrap">
+  <h1>Trae 账号管理</h1>
+  <div class="sub">积分余额 · 每日签到 · 凭证保活 · SOLO 原生通道</div>
+  <div id="authBox" class="card" style="display:none;margin-bottom:16px">
+    <div style="margin-bottom:8px;color:var(--mut)">访问账号数据需要管理密钥。从 CPA 主面板打开时会自动获取密钥。请勿使用错误密钥反复尝试，以免 IP 被封禁。</div>
+    <div style="display:flex;gap:8px">
+      <input id="keyInput" type="password" placeholder="请输入管理密钥" class="field-input">
+      <button onclick="saveKey()">连接</button>
+    </div>
+  </div>
+  <div class="bar">
+    <button id="loginBtn" onclick="startLogin(this)">网页登录</button>
+    <button class="sec" onclick="openImportModal()">导入凭据</button>
+    <button class="sec" onclick="load(true,this)">刷新数据</button>
+    <button class="sec" onclick="checkinAll(this)">全部签到</button>
+    <button class="sec" onclick="refreshAll(this)">刷新凭证</button>
+    <span class="toggle" id="settingsLine"></span>
+    <span class="toggle" id="svtime"></span>
+  </div>
+  <div id="loginCard" class="card">
+    <h2 style="font-size:15px;margin:0 0 8px">完成网页登录</h2>
+    <p style="margin:6px 0"><a id="loginURL" target="_blank" rel="noopener noreferrer">打开 Trae 登录页</a></p>
+    <p class="hint" id="loginHelp"></p>
+    <textarea id="callbackRaw" placeholder="必要时粘贴浏览器中的完整回调链接"></textarea>
+    <div class="actions">
+      <button onclick="completeLogin(this)">提交回调</button>
+      <button class="sec" onclick="pollLoginOnce(this)">检查登录状态</button>
+      <button class="sec" onclick="cancelLogin()">取消</button>
+    </div>
+  </div>
+  <div class="summary" id="summaryBox" style="display:none">
+    <div class="it"><div class="k">账号数</div><div class="v" id="sumCount">-</div></div>
+    <div class="it"><div class="k">总剩余积分</div><div class="v" id="sumRemain">-</div></div>
+    <div class="it"><div class="k">总已用</div><div class="v" id="sumUsed">-</div></div>
+    <div class="it"><div class="k">今日请求</div><div class="v" id="sumToday">-</div></div>
+    <div class="it"><div class="k">成功率（本次运行）</div><div class="v" id="sumSuccess">-</div></div>
+  </div>
+  <div id="grid" class="grid"><div class="loading">加载中…</div></div>
+  <section class="usage-sec">
+    <div class="card">
+      <div class="usage-hd">
+        <div class="summary-title">Trae 调用记录</div>
+        <div class="usage-grid" id="usageSummaryBox">
+          <div class="usage-item"><div class="k">总请求</div><div class="v" id="uTotal">-</div></div>
+          <div class="usage-item"><div class="k">成功</div><div class="v ok" id="uOk">-</div></div>
+          <div class="usage-item"><div class="k">失败</div><div class="v err" id="uFail">-</div></div>
+          <div class="usage-item"><div class="k">输入 / 输出 Token</div><div class="v" id="uTok">-</div></div><div class="usage-item"><div class="k">缓存命中（读）</div><div class="v" id="uCache">-</div></div><div class="usage-item"><div class="k">消耗积分</div><div class="v" id="uCred">-</div></div>
+        </div>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>时间</th><th>账号 / 模型</th><th class="num">输入 Token</th><th class="num">输出 Token</th><th class="num">缓存读/写</th><th class="num">积分</th><th class="num">耗时</th><th>结果</th></tr></thead>
+          <tbody id="usageBody"><tr><td colspan="8"><div class="usage-loading">正在加载…</div></td></tr></tbody>
+        </table>
+      </div>
+      <div class="usage-meta">默认展示本次 CPA 运行的最近 500 条记录。持久化日志可在插件配置中设置 usage_file。</div>
+    </div>
+  </section>
+</div>
+<div class="modal-mask" id="importModal" onclick="onImportMaskClick(event)">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="importModalTitle">
+    <div class="modal-hd">
+      <h2 id="importModalTitle">导入账号凭据 JSON</h2>
+      <button type="button" class="modal-x" onclick="closeImportModal()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <p class="hint">支持嵌套格式 <code>{"auth":{...},"account":{...}}</code> 或扁平格式 <code>{"accessToken":...}</code>，保存为 <code>trae-&lt;uid&gt;.json</code>。</p>
+      <textarea id="importRaw" rows="8" placeholder='请粘贴 Trae 账号凭据 JSON'></textarea>
+    </div>
+    <div class="modal-ft">
+      <button type="button" class="sec" onclick="closeImportModal()">取消</button>
+      <button type="button" onclick="importAuth(this)">导入并保存</button>
+    </div>
+  </div>
+</div>
+<div class="toasts" id="toasts"></div>
+<script>
+const API = "/v0/management/plugins/trae";
+
+/* ---------- management key acquisition (3 fallbacks, zero config) ----------
+   1) CPA main panel localStorage "cli-proxy-auth" (XOR+base64, same-origin
+      iframe embed) — same approach as codebuddy-intl-cpa / cpa-plugin-key-policy.
+   2) ?key= URL param (cleaned from history after read, kept in sessionStorage).
+   3) Manual input (sessionStorage only, never persisted). */
+const ENC_PREFIX = "enc::v1::";
+const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
+const PANEL_STORE = "cli-proxy-auth";
+const SS_KEY = "trae-mgmt-key";
+
+function _enc(t){return new TextEncoder().encode(t)}
+function _dec(b){return new TextDecoder().decode(b)}
+function _keyBytes(){try{return _enc(SECRET_SALT+"|"+window.location.host+"|"+navigator.userAgent)}catch(e){return _enc(SECRET_SALT)}}
+function _xor(d,k){const r=new Uint8Array(d.length);for(let i=0;i<d.length;i++)r[i]=d[i]^k[i%k.length];return r}
+function _b64d(s){const bin=atob(s);const b=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i);return b}
+function deobfuscate(p){if(!p||!p.startsWith(ENC_PREFIX))return p;try{return _dec(_xor(_b64d(p.slice(ENC_PREFIX.length)),_keyBytes()))}catch(e){return p}}
+function isEmbedded(){try{return window.self!==window.top}catch(e){return false}}
+function readPanelKey(){
+  if(!isEmbedded())return null;
+  let raw;try{raw=localStorage.getItem(PANEL_STORE)}catch(e){return null}
+  if(!raw)return null;
+  try{
+    const parsed=JSON.parse(deobfuscate(raw));
+    const st=(parsed&&parsed.state)||parsed||{};
+    return typeof st.managementKey==="string"&&st.managementKey?st.managementKey:null;
+  }catch(e){return null}
+}
+function readUrlKey(){
+  const m=new URLSearchParams(window.location.search).get("key");
+  if(m){history.replaceState(null,"",window.location.pathname)}
+  return m;
+}
+function getKey(){return sessionStorage.getItem(SS_KEY)||readPanelKey()||readUrlKey()}
+function saveKey(){
+  const v=document.getElementById("keyInput").value.trim();
+  if(!v)return;
+  sessionStorage.setItem(SS_KEY,v);
+  document.getElementById("authBox").style.display="none";
+  load(false);
+}
+function showAuth(){document.getElementById("authBox").style.display="block";const i=document.getElementById("keyInput");i&&i.focus()}
+function authHeaders(k){return k?{"Authorization":"Bearer "+k}:{}}
+/* --------------------------------------------------------------------------- */
+
+function toast(title,kind="ok",detail=""){
+  const box=document.getElementById("toasts");
+  const el=document.createElement("div");
+  el.className="toast "+kind;
+  el.innerHTML='<div class="t"></div>'+(detail?'<div class="d"></div>':'');
+  el.querySelector(".t").textContent=title;
+  if(detail)el.querySelector(".d").textContent=detail;
+  box.appendChild(el);
+  requestAnimationFrame(()=>requestAnimationFrame(()=>el.classList.add("show")));
+  const kill=()=>{el.classList.remove("show");setTimeout(()=>el.remove(),300)};
+  el.onclick=kill;
+  setTimeout(kill,kind==="err"?6000:4000);
+  while(box.children.length>5)box.firstChild.remove();
+}
+function busy(btn,on){
+  if(!btn)return;
+  if(on){btn.dataset.orig=btn.innerHTML;btn.disabled=true;btn.innerHTML='<span class="spin"></span>处理中…'}
+  else{btn.disabled=false;if(btn.dataset.orig)btn.innerHTML=btn.dataset.orig}
+}
+function esc(s){return (s==null?"":String(s)).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function fmtNum(n){return (n==null?0:n).toLocaleString("zh-CN")}
+function fmtDT(t){const d=new Date(t);return isNaN(d)?(t||"-"):d.toLocaleString("zh-CN",{hour12:false})}
+
+async function api(path,body){
+  const k=getKey();
+  const r=await fetch(API+path,{method:body===undefined?"GET":"POST",headers:Object.assign({"Content-Type":"application/json"},authHeaders(k)),body:body===undefined?undefined:JSON.stringify(body)});
+  let obj;try{obj=await r.json()}catch{throw new Error("管理接口未返回 JSON，请检查密钥与 CPA 地址")}
+  if(r.status===401||r.status===403){
+    sessionStorage.removeItem(SS_KEY);
+    showAuth();
+    throw new Error(obj.error||"管理密钥无效或未提供");
+  }
+  if(!r.ok||obj.error)throw new Error(obj.error||"HTTP "+r.status);
+  return obj;
+}
+
+/* ---------- accounts ---------- */
+let lastAccounts=[];
+function progressHTML(a){
+  if(a.error&&!a.limit)return '<div class="pb"><div class="pb-label"><span>积分</span><span class="err">查询失败</span></div><div class="pb-track"><div class="pb-bar" style="width:0%"></div></div></div>';
+  const remain=a.remain||0,used=a.used||0;
+  const total=a.limit>0?a.limit:(remain+used);
+  const pct=total>0?Math.round(used/total*100):0;
+  let color="var(--ok)";if(pct>60)color="var(--warn)";if(pct>85)color="var(--err)";
+  return `<div class="pb"><div class="pb-label"><span>可用 ${fmtNum(remain)}</span><span>已用 ${fmtNum(used)} · ${pct}%</span></div><div class="pb-track"><div class="pb-bar" style="width:${pct}%;background:${color}"></div></div><div class="pb-meta">剩余 ${fmtNum(remain)} · 已用 ${fmtNum(used)} · 总额度 ${fmtNum(total)}${a.packs?` · ${a.packs} 个积分包`:""}</div></div>`;
+}
+function card(a){
+  const disabled=!!a.disabled;
+  const exhausted=!a.error&&a.limit>0&&(a.remain||0)===0;
+  const badges=(disabled?'<span class="badge disabled">已禁用</span>':"")+(exhausted?'<span class="badge exhausted">已耗尽</span>':"")+(a.error?'<span class="badge err">异常</span>':'<span class="badge">正常</span>');
+  const checkin=a.checkin_enabled?(a.checked_in?'<button class="done" disabled>已签到</button>':`<button class="sec" data-action="checkin" data-auth-index="${esc(a.auth_index)}">签到</button>`):"";
+  const toggleBtn=disabled
+    ?`<button class="sec" data-action="enable" data-auth-index="${esc(a.auth_index)}">启用</button>`
+    :`<button class="sec" data-action="disable" data-auth-index="${esc(a.auth_index)}">停用</button>`;
+  return `<div class="card" data-auth="${esc(a.auth_index)}">
+  <h2>${esc(a.name||a.uid||a.auth_index)} <span style="display:flex;gap:6px;align-items:center">${badges}</span></h2>
+  <div class="uid">${esc(a.uid||"")} · ${esc(a.auth_index||"")}</div>
+  ${progressHTML(a)}
+  <div class="row"><span class="k">签到</span><span>${a.checkin_enabled?(a.checked_in?"今日已签到":"今日未签到"):"不可用"}</span></div>
+  ${a.expires_at?`<div class="row"><span class="k">凭证过期</span><span>${fmtDT(a.expires_at*1000)}</span></div>`:""}
+  ${a.error?`<div class="row"><span class="k">错误</span><span class="err">${esc(a.error)}</span></div>`:""}
+  <div class="actions">${checkin}${toggleBtn}</div>
+  </div>`;
+}
+function bindCardActions(root){
+  (root||document).querySelectorAll("[data-action]").forEach(btn=>{
+    if(btn._bound)return;
+    btn._bound=true;
+    btn.addEventListener("click",ev=>{
+      const act=ev.currentTarget.dataset.action;
+      const idx=ev.currentTarget.dataset.authIndex;
+      if(act==="checkin")checkinOne(idx,ev.currentTarget);
+      else if(act==="enable")toggleOne(idx,true,ev.currentTarget);
+      else if(act==="disable")toggleOne(idx,false,ev.currentTarget);
+    });
+  });
+}
+function renderAccounts(accounts){
+  lastAccounts=accounts;
+  const grid=document.getElementById("grid");
+  if(!accounts.length){grid.innerHTML='<div class="loading">还没有账号。请点击“网页登录”或“导入凭据”。</div>';return}
+  grid.innerHTML=accounts.map(card).join("");
+  bindCardActions(grid);
+}
+function renderSummary(accounts,usage){
+  const known=accounts.filter(a=>!a.error&&a.limit>=0&&!a.disabled);
+  const remain=known.reduce((s,a)=>s+(a.remain||0),0);
+  const used=known.reduce((s,a)=>s+(a.used||0),0);
+  const today=new Date();today.setHours(0,0,0,0);
+  const todayReqs=(usage||[]).filter(u=>new Date(u.time)>=today).length;
+  const ok=(usage||[]).filter(u=>u.success).length;
+  const rate=usage&&usage.length?Math.round(ok/usage.length*100)+"%":"-";
+  document.getElementById("sumCount").textContent=accounts.length;
+  document.getElementById("sumRemain").textContent=fmtNum(remain);
+  document.getElementById("sumUsed").textContent=fmtNum(used);
+  document.getElementById("sumToday").textContent=todayReqs;
+  document.getElementById("sumSuccess").textContent=rate;
+  document.getElementById("summaryBox").style.display="flex";
+}
+/* ---------- usage ---------- */
+function renderUsage(records){
+  const body=document.getElementById("usageBody");
+  const list=records||[];
+  if(!list.length){body.innerHTML='<tr><td colspan="8"><div class="usage-loading">暂无调用记录</div></td></tr>'}
+  else{
+    body.innerHTML=list.map(u=>{
+      const t=u.tokens||{};
+      const cr=t.cache_read_tokens||0,cw=t.cache_write_tokens||0;
+      const credits=t.credits_consumed!=null?t.credits_consumed:"-";
+      return `<tr><td>${fmtDT(u.time)}</td><td>${esc(u.account||"-")} / ${esc(u.model||"-")}</td><td class="num">${fmtNum(t.prompt_tokens)}</td><td class="num">${fmtNum(t.completion_tokens)}</td><td class="num">${cr||cw?fmtNum(cr)+" / "+fmtNum(cw):"-"}</td><td class="num">${credits}</td><td class="num">${((u.duration_ms||0)/1000).toFixed(2)}s</td><td class="${u.success?"ok":"err"}">${u.success?"成功":esc(u.error||"失败")}</td></tr>`;
+    }).join("");
+  }
+  const ok=list.filter(u=>u.success).length;
+  const tin=list.reduce((s,u)=>s+((u.tokens||{}).prompt_tokens||0),0);
+  const tout=list.reduce((s,u)=>s+((u.tokens||{}).completion_tokens||0),0);
+  const tcread=list.reduce((s,u)=>s+((u.tokens||{}).cache_read_tokens||0),0);
+  const tcred=list.reduce((s,u)=>s+((u.tokens||{}).credits_consumed||0),0);
+  document.getElementById("uTotal").textContent=list.length;
+  document.getElementById("uOk").textContent=ok;
+  document.getElementById("uFail").textContent=list.length-ok;
+  document.getElementById("uTok").textContent=fmtNum(tin)+" / "+fmtNum(tout);
+  document.getElementById("uCache").textContent=tcread>0?fmtNum(tcread)+(tin>0?" · "+Math.round(tcread/tin*100)+"%":""):"-";
+  document.getElementById("uCred").textContent=tcred>0?(Math.round(tcred*100)/100):"-";
+}
+/* ---------- load ---------- */
+async function load(manual,btn){
+  busy(btn,true);
+  try{
+    const [accounts,usage,settings]=await Promise.all([api("/accounts"),api("/usage"),api("/settings")]);
+    renderAccounts(accounts.accounts||[]);
+    renderUsage(usage.records||[]);
+    renderSummary(accounts.accounts||[],usage.records||[]);
+    document.getElementById("settingsLine").textContent=`自动签到：${settings.checkin_auto?"开启":"关闭"} ${settings.checkin_time||""} · 凭证保活：${settings.token_keepalive?"开启":"关闭"}`;
+    document.getElementById("svtime").textContent="更新于 "+new Date().toLocaleTimeString("zh-CN",{hour12:false});
+    if(manual)toast("数据已刷新");
+  }catch(e){
+    if(!getKey())showAuth();
+    toast("加载失败","err",e.message);
+  }finally{busy(btn,false)}
+}
+/* ---------- actions ---------- */
+async function checkinAll(btn){
+  busy(btn,true);
+  try{
+    const r=await api("/checkin",{});
+    const detail=(r.results||[]).map(x=>x.auth_index+"："+(x.success?"成功":x.error)).join("\n")||"没有可签到的账号";
+    await load(false);
+    toast("全部签到完成","ok",detail);
+  }catch(e){toast("签到失败","err",e.message)}finally{busy(btn,false)}
+}
+async function checkinOne(idx,btn){
+  busy(btn,true);
+  try{
+    const r=await api("/checkin",{auth_index:idx});
+    const row=(r.results||[])[0]||{};
+    if(row.success){btn.disabled=true;btn.className="done";btn.textContent="已签到";toast("签到成功")}
+    else toast("签到失败","err",row.error||"未知错误");
+    load(false);
+  }catch(e){toast("签到失败","err",e.message)}finally{busy(btn,false)}
+}
+async function refreshAll(btn){
+  busy(btn,true);
+  try{
+    const r=await api("/refresh",{});
+    const detail=(r.results||[]).map(x=>x.auth_index+"："+(x.success?"已刷新":x.error)).join("\n")||"没有启用的账号";
+    await load(false);
+    toast("凭证刷新完成","ok",detail);
+  }catch(e){toast("刷新失败","err",e.message)}finally{busy(btn,false)}
+}
+async function toggleOne(idx,enable,btn){
+  busy(btn,true);
+  try{
+    await api("/toggle",{auth_index:idx,enabled:enable});
+    await load(false);
+    toast(enable?"账号已启用":"账号已停用");
+  }catch(e){toast("操作失败","err",e.message)}finally{busy(btn,false)}
+}
+/* ---------- import modal ---------- */
+function openImportModal(){document.getElementById("importModal").classList.add("show");const t=document.getElementById("importRaw");t&&t.focus()}
+function closeImportModal(){document.getElementById("importModal").classList.remove("show")}
+function onImportMaskClick(e){if(e.target===e.currentTarget)closeImportModal()}
+async function importAuth(btn){
+  let parsed;
+  try{parsed=JSON.parse(document.getElementById("importRaw").value)}catch(e){toast("JSON 格式错误","err",e.message);return}
+  busy(btn,true);
+  try{
+    const r=await api("/import",parsed);
+    document.getElementById("importRaw").value="";
+    closeImportModal();
+    await load(false);
+    toast("凭证已导入","ok",(r.nickname||r.uid||""));
+  }catch(e){toast("导入失败","err",e.message)}finally{busy(btn,false)}
+}
+/* ---------- web login (kept) ---------- */
+let loginState="",loginTimer=null,loginExpiry=null;
+async function startLogin(btn){
+  busy(btn,true);
+  try{
+    if(loginTimer)clearInterval(loginTimer);
+    if(loginExpiry)clearTimeout(loginExpiry);
+    const r=await api("/login/start",{});
+    loginState=r.State;
+    document.getElementById("loginCard").classList.add("show");
+    document.getElementById("loginURL").href=r.URL;
+    document.getElementById("loginHelp").textContent=(r.Metadata&&r.Metadata.message)||"";
+    loginTimer=setInterval(()=>{pollLogin().then(t=>{if(t)toast(t)}).catch(e=>toast("登录失败","err",e.message))},3000);
+    loginExpiry=setTimeout(()=>{if(loginTimer){clearInterval(loginTimer);loginTimer=null}},300000);
+    toast("请打开 Trae 登录页完成登录");
+  }catch(e){toast("无法发起登录","err",e.message)}finally{busy(btn,false)}
+}
+async function pollLogin(){
+  const r=await api("/login/poll",{State:loginState});
+  if(r.Status==="success"){
+    clearInterval(loginTimer);loginTimer=null;
+    document.getElementById("callbackRaw").value="";
+    document.getElementById("loginCard").classList.remove("show");
+    await load(false);
+    toast("登录成功，账号已导入");
+    return null;
+  }
+  if(r.Status==="error"){clearInterval(loginTimer);loginTimer=null;throw new Error(r.Message||"登录失败")}
+  return null;
+}
+async function pollLoginOnce(btn){busy(btn,true);try{await pollLogin()}catch(e){toast("登录失败","err",e.message)}finally{busy(btn,false)}}
+async function completeLogin(btn){
+  busy(btn,true);
+  try{
+    await api("/login/complete",{state:loginState,callback_url:document.getElementById("callbackRaw").value});
+    await pollLogin();
+  }catch(e){toast("登录失败","err",e.message)}finally{busy(btn,false)}
+}
+function cancelLogin(){
+  if(loginTimer){clearInterval(loginTimer);loginTimer=null}
+  if(loginExpiry){clearTimeout(loginExpiry);loginExpiry=null}
+  document.getElementById("loginCard").classList.remove("show");
+}
+/* ---------- boot ---------- */
+document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="Enter")saveKey()});
+document.addEventListener("keydown",e=>{if(e.key==="Escape")closeImportModal()});
+window.addEventListener("pagehide",()=>{
+  if(loginTimer)clearInterval(loginTimer);
+  sessionStorage.removeItem(SS_KEY);
+  document.getElementById("keyInput").value="";
+  document.getElementById("importRaw").value="";
+  document.getElementById("callbackRaw").value="";
+});
+window.__traeThemeSync&&window.__traeThemeSync();
+if(getKey()){load(false)}else{showAuth();document.getElementById("grid").innerHTML='<div class="loading">请输入管理密钥，或从 CPA 主面板打开本页面</div>'}
+</script>
+</body>
+</html>

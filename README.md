@@ -1,5 +1,9 @@
 # CodeBuddy Intl CPA
 
+> **Unified CodeBuddy + Trae build:** this branch embeds Trae CN SOLO into the
+> same Windows DLL and bilingual management entry. See [installation and
+> compatibility notes](docs/unified-plugin.md). Internal provider ID: `workbuddy`.
+
 [简体中文](README.zh-CN.md) | English
 
 A **CLIProxyAPI (CPA)** provider plugin for **Tencent CodeBuddy**, built for **Global (Intl)

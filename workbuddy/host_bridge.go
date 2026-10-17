@@ -12,12 +12,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"runtime"
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // sharedHTTPClient is the fallback HTTP client used ONLY when the host HTTP
@@ -218,12 +217,9 @@ func hostHTTPDo(req *http.Request) (*hostHTTPResponse, error) {
 		_ = req.Body.Close()
 		bodyBytes = b
 	}
-	// Windows stack movement mitigation: nested host calls during synchronous
-	// RPCs (model.for_auth, management.handle) cause the host stack to move,
-	// rendering the stack response pointer dangling and causing "unexpected
-	// end of JSON input". Bypass host bridge on Windows and make direct HTTP
-	// calls.
-	if !hostBridgeAvailable() || runtime.GOOS == "windows" {
+	// Native hostCall uses C-owned callback and response storage, including on
+	// Windows. Keep direct HTTP only for hosts without the callback bridge.
+	if !hostBridgeAvailable() {
 		return hostHTTPDoDirect(req, bodyBytes)
 	}
 	wire := rpcHostHTTPRequestWire{
@@ -319,9 +315,9 @@ func hostHTTPDoStream(req *http.Request) (*hostHTTPStream, int, http.Header, err
 		_ = req.Body.Close()
 		bodyBytes = b
 	}
-	// Match hostHTTPDo's Windows mitigation: nested synchronous callbacks can
-	// invalidate the C stack response pointer on the host's Windows loader.
-	if !hostBridgeAvailable() || runtime.GOOS == "windows" {
+	// The C ABI now stores both callback table and response descriptor on the
+	// C heap, so Windows can use host transport just like the other platforms.
+	if !hostBridgeAvailable() {
 		return hostHTTPDoStreamDirect(req, bodyBytes)
 	}
 	wire := rpcHostHTTPRequestWire{

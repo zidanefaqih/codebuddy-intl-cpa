@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // newLoginClient builds an isolated client with its own cookie jar so that the
@@ -150,7 +150,7 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 			ExpiresAt:    time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second).Unix(),
 			Domain:       tok.Domain,
 		},
-		Account:  storedAccount(acct),
+		Account: storedAccount(acct),
 	}
 	loginStates.Delete(state)
 	return okEnvelope(pluginapi.AuthLoginPollResponse{

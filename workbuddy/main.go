@@ -64,6 +64,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -72,9 +73,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 const (
@@ -170,10 +171,16 @@ func main() {}
 
 //export cliproxy_plugin_init
 func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_api) C.int {
-	if plugin == nil {
+	if plugin == nil || host == nil || host.abi_version != C.uint32_t(pluginabi.ABIVersion) || host.call == nil || host.free_buffer == nil {
 		return 1
 	}
-	hostAPI = host
+	// The loader can pass a stack-backed table. Nested Windows host callbacks
+	// must only retain C-owned memory, including the response descriptor below.
+	hostAPI = (*C.cliproxy_host_api)(C.malloc(C.size_t(unsafe.Sizeof(*host))))
+	if hostAPI == nil {
+		return 1
+	}
+	*hostAPI = *host
 	plugin.abi_version = C.uint32_t(pluginabi.ABIVersion)
 	plugin.call = C.cliproxy_plugin_call_fn(C.cliproxyPluginCall)
 	plugin.free_buffer = C.cliproxy_plugin_free_fn(C.cliproxyPluginFree)
@@ -187,7 +194,7 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 		response.ptr = nil
 		response.len = 0
 	}
-	if method == nil {
+	if response == nil || method == nil || requestLen > 16<<20 || (request == nil && requestLen > 0) {
 		writeResponse(response, errorEnvelope("invalid_method", "method is required"))
 		return 1
 	}
@@ -197,7 +204,7 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 	}
 	raw, errHandle := handleMethod(C.GoString(method), requestBytes)
 	if errHandle != nil {
-		writeResponse(response, errorEnvelope("plugin_error", errHandle.Error()))
+		writeResponse(response, errorEnvelopeFromError(errHandle))
 		return 1
 	}
 	writeResponse(response, raw)
@@ -243,14 +250,21 @@ func hostCall(method string, request []byte) ([]byte, error) {
 		defer C.free(cReq)
 		reqLen = C.size_t(len(request))
 	}
-	var resp C.cliproxy_buffer
-	rc := C.wb_call_host(hostAPI, cMethod, (*C.uint8_t)(cReq), reqLen, &resp)
+	resp := (*C.cliproxy_buffer)(C.calloc(1, C.size_t(unsafe.Sizeof(C.cliproxy_buffer{}))))
+	if resp == nil {
+		return nil, fmt.Errorf("host response allocation failed")
+	}
+	defer C.free(unsafe.Pointer(resp))
+	rc := C.wb_call_host(hostAPI, cMethod, (*C.uint8_t)(cReq), reqLen, resp)
+	if resp.ptr != nil {
+		defer C.wb_free_host_buffer(hostAPI, resp.ptr, resp.len)
+	}
+	if resp.len > 32<<20 {
+		return nil, fmt.Errorf("host response exceeds 32 MiB")
+	}
 	var out []byte
 	if resp.ptr != nil && resp.len > 0 {
 		out = C.GoBytes(resp.ptr, C.int(resp.len))
-	}
-	if resp.ptr != nil && hostAPI.free_buffer != nil {
-		C.wb_free_host_buffer(hostAPI, resp.ptr, resp.len)
 	}
 	if rc != 0 {
 		return out, fmt.Errorf("host call %s returned %d", method, int(rc))
@@ -261,9 +275,15 @@ func hostCall(method string, request []byte) ([]byte, error) {
 // -----------------------------------------------------------------------------
 
 func handleMethod(method string, request []byte) ([]byte, error) {
+	if out, handled, err := dispatchTrae(method, request); handled {
+		return out, err
+	}
 	switch method {
 	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
 		configure(request)
+		if err := configureTrae(request); err != nil {
+			return nil, err
+		}
 		return okEnvelope(wbRegistration())
 	case pluginabi.MethodModelStatic:
 		return handleModelStatic(request)
@@ -298,7 +318,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 				setManagementBasePath(regReq.BasePath)
 			}
 		}
-		return okEnvelope(managementRegistration())
+		return okEnvelope(unifiedManagementRegistration())
 	case pluginabi.MethodManagementHandle:
 		return handleManagement(request)
 	case pluginabi.MethodUsageHandle:
@@ -319,8 +339,9 @@ type envelope struct {
 }
 
 type envelopeError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	HTTPStatus int    `json:"http_status,omitempty"`
 }
 
 type identifierResponse struct {
@@ -355,10 +376,10 @@ type registrationCapability struct {
 // normal release keeps the production defaults; -ldflags -X can label a test
 // binary without changing the provider/auth identifier (workbuddy).
 var (
-	version           = "0.9.7"
+	version           = "0.9.7+unified-trae.0.1.6"
 	pluginRouteID     = providerName
-	pluginDisplayName = "CodeBuddy Intl CPA"
-	pluginMenuName    = "CodeBuddy"
+	pluginDisplayName = "CodeBuddy + Trae"
+	pluginMenuName    = "CodeBuddy + Trae"
 	pluginPanelBrand  = "CodeBuddy"
 )
 
@@ -368,10 +389,16 @@ func wbRegistration() registration {
 		Metadata: pluginapi.Metadata{
 			Name:             pluginDisplayName,
 			Version:          version,
-			Author:           "zidanefaqih (based on Sliverkiss/cpa-plugin, itself based on workbuddy by lovingfish)",
+			Author:           "CodeBuddy: zidanefaqih, Sliverkiss, lovingfish; Trae: connectedGraph; integration: oligeeklaphake",
 			GitHubRepository: "https://github.com/zidanefaqih/codebuddy-intl-cpa",
 			Logo:             pluginLogoURL,
 			ConfigFields: []pluginapi.ConfigField{
+				{Name: "trae_checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Trae: enable daily automatic check-in (default true)."},
+				{Name: "trae_checkin_time", Type: pluginapi.ConfigFieldTypeString, Description: "Trae: check-in time in Asia/Shanghai, HH:MM (default 09:00)."},
+				{Name: "trae_token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Trae: refresh expiring credentials hourly (default true)."},
+				{Name: "trae_max_attempts", Type: pluginapi.ConfigFieldTypeInteger, Description: "Trae: maximum account attempts before first output, 1..20 (default 3)."},
+				{Name: "trae_callback_port", Type: pluginapi.ConfigFieldTypeInteger, Description: "Trae: loopback login callback port; 0 for manual callback (default 18080)."},
+				{Name: "trae_usage_file", Type: pluginapi.ConfigFieldTypeString, Description: "Trae: optional additional JSONL journal; unified usage is always recorded."},
 				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily auto check-in at 09:00 and 21:00 local time for CN accounts (default true)."},
 				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Auto disable CN / delete Global when credits exhausted; re-enable CN after check-in restores credits (default true)."},
 				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily access-token refresh at 22:00 local time to prevent Keycloak offline-session expiry (default true)."},
@@ -882,12 +909,8 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	if sa.Account.UID != "" {
 		authUID = sa.Account.UID
 	}
-	body := req.Payload
-	if len(body) == 0 {
-		body = req.OriginalRequest
-	}
 	// Single-pass JSON rewrite (see handleExecExecute for the non-stream path).
-	body = prepareUpstreamBody(body, nil, sa, upstreamModel)
+	body := prepareUpstreamBody(req.Payload, req.OriginalRequest, sa, upstreamModel)
 	trace := newCacheTrace(req.Payload, req.OriginalRequest, body, req.Metadata, started)
 
 	headers := streamHeaders()
@@ -988,7 +1011,7 @@ func collectStreamAttempt(body []byte, cand *failoverCandidate, sseFramed bool, 
 	reader := newHostStreamReader(stream)
 	if statusCode >= 400 {
 		errPayload, _ := io.ReadAll(reader)
-		return nil, statusCode, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(string(errPayload), 200))
+		return nil, statusCode, &upstreamStatusError{status: statusCode, body: string(errPayload)}
 	}
 	chunks, errAgg := aggregateSSEWithCollector(reader, sseFramed, collector)
 	if errAgg != nil {
@@ -1033,6 +1056,16 @@ func okEnvelope(v any) ([]byte, error) {
 
 func errorEnvelope(code, message string) []byte {
 	raw, _ := json.Marshal(envelope{OK: false, Error: &envelopeError{Code: code, Message: message}})
+	return raw
+}
+
+func errorEnvelopeFromError(err error) []byte {
+	pluginErr := &envelopeError{Code: "plugin_error", Message: redactSecrets(err.Error())}
+	var statusErr interface{ StatusCode() int }
+	if errors.As(err, &statusErr) {
+		pluginErr.HTTPStatus = statusErr.StatusCode()
+	}
+	raw, _ := json.Marshal(envelope{OK: false, Error: pluginErr})
 	return raw
 }
 

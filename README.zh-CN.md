@@ -1,5 +1,8 @@
 # CodeBuddy Intl CPA 简体中文版
 
+> **CodeBuddy + Trae 整合版：** 此分支将 Trae 国内版 SOLO 合入同一个 Windows DLL，
+> 共用中英文管理入口。见[安装与兼容说明](docs/unified-plugin.md)。内部 ID 仍为 `workbuddy`。
+
 简体中文 | [English](README.md)
 
 面向腾讯 **CodeBuddy 国际版（Global / Intl）账号**的 CLIProxyAPI（CPA）插件，包含其他 CPA 插件跳过的**国际账号每日积分奖励**。
