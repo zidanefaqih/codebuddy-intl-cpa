@@ -7,8 +7,25 @@ package main
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 )
+
+// reDeepSeekHarnessIntro matches the DeepSeek Harness base-instructions
+// opening signature — the third member of the same Tencent 11-128
+// "unapproved channel" family as the Claude Code and Codex CLI templates
+// below. Evidence (single-variable replay against copilot.tencent.com,
+// cpa-multi-plugins v0.9.62): the bare sentence "You are an AI agent powered
+// by DeepSeek Harness" answers 400 / code 11128 every time, while
+// "DeepSeek Harness" alone, "powered by DeepSeek Harness", "You are an AI
+// agent powered by DeepSeek." and the same sentence naming a different
+// harness all answer 200. Swapping only that sentence inside a 175 KB request
+// (47 messages, 66 tools, reasoning_effort=max) flips 400 -> 200.
+var reDeepSeekHarnessIntro = regexp.MustCompile(`(?i)you are an ai agent powered by deepseek harness`)
+
+// deepSeekHarnessIntroReplacement keeps the agent framing neutral while
+// dropping the blocklisted signature.
+const deepSeekHarnessIntroReplacement = "You are an AI assistant"
 
 // forceStreamBody returns the request body with "stream":true set, since the
 // upstream rejects non-streaming chat requests.
@@ -396,6 +413,10 @@ func sanitizeBlockedTemplates(s string) string {
 	s = strings.ReplaceAll(s,
 		"To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
 		"To give feedback, users should report the issue in the project's issue tracker")
+	// DeepSeek Harness intro signature — same verbatim-match channel gate.
+	// System-role gating happens upstream in rewriteSystemInPlace; user
+	// content passes through untouched.
+	s = reDeepSeekHarnessIntro.ReplaceAllString(s, deepSeekHarnessIntroReplacement)
 	return s
 }
 

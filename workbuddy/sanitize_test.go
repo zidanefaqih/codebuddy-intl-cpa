@@ -117,3 +117,66 @@ func TestTruncate(t *testing.T) {
 		t.Fatal("empty string")
 	}
 }
+
+func TestSanitizeBlockedTemplates_DeepSeekHarness(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{
+			name: "verbatim",
+			in:   "You are an AI agent powered by DeepSeek Harness. Follow the rules.",
+			want: "You are an AI assistant. Follow the rules.",
+		},
+		{
+			name: "no trailing period",
+			in:   "You are an AI agent powered by DeepSeek Harness",
+			want: "You are an AI assistant",
+		},
+		{
+			name: "case drift",
+			in:   "you are an AI agent powered by deepseek harness.",
+			want: "You are an AI assistant.",
+		},
+		{
+			name: "embedded in a long prompt",
+			in:   "Intro line.\nYou are an AI agent powered by DeepSeek Harness.\nTools follow.",
+			want: "Intro line.\nYou are an AI assistant.\nTools follow.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitizeBlockedTemplates(tc.in); got != tc.want {
+				t.Fatalf("sanitizeBlockedTemplates(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// Near-misses must survive untouched: only the full "You are an AI agent
+// powered by DeepSeek Harness" sentence is blocklisted (verified by replay —
+// each of these returned 200 against the live gateway).
+func TestSanitizeBlockedTemplates_DeepSeekHarnessNearMisses(t *testing.T) {
+	untouched := []string{
+		"DeepSeek Harness",
+		"powered by DeepSeek Harness",
+		"You are an AI agent powered by DeepSeek.",
+		"You are an AI agent powered by Acme Harness.",
+		"AI agent powered by DeepSeek Harness.",
+	}
+	for _, in := range untouched {
+		if got := sanitizeBlockedTemplates(in); got != in {
+			t.Fatalf("sanitizeBlockedTemplates(%q) = %q, want it untouched", in, got)
+		}
+	}
+}
+
+// The rewrite must survive the whole request pipeline (system message inside a
+// chat-completions body), not just the string helper.
+func TestRewriteSystemForUpstream_DeepSeekHarness(t *testing.T) {
+	in := []byte(`{"messages":[{"role":"system","content":"You are an AI agent powered by DeepSeek Harness. Be brief."},{"role":"user","content":"hi"}]}`)
+	out := rewriteSystemForUpstream(in)
+	if strings.Contains(string(out), "powered by DeepSeek Harness") {
+		t.Fatalf("harness intro survived: %s", string(out))
+	}
+	if !strings.Contains(string(out), "You are an AI assistant. Be brief.") {
+		t.Fatalf("rewrite lost the surrounding prompt: %s", string(out))
+	}
+}
