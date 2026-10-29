@@ -732,9 +732,17 @@ func markCandidateUnavailable(c *failoverCandidate, outcome attemptOutcome, body
 	if c == nil {
 		return
 	}
+	// A request refusal (11128 channel check / safety-review verdict) is a
+	// verdict on the request, not the account — and the safety-review body also
+	// carries code 11140, so this check must precede the ban match. Cooling the
+	// account here would burn a healthy credential on the gateway's own fault;
+	// the loop stops retrying the request verbatim instead.
+	if isRiskRequestRefusal(0, body) {
+		return
+	}
 	// Risk control is account-wide and does not expire on its own: flag it for
-	// the panel and park the account on the long cooldown instead of treating
-	// the failure as a soft 429 that clears itself in ten minutes.
+	// the panel and take the account out of routing until the operator lifts it,
+	// instead of treating the failure as a soft 429 that clears itself.
 	if isRiskControlResponse(0, body) {
 		markCandidateRiskBlocked(c, body)
 		return

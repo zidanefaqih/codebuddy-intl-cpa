@@ -128,6 +128,23 @@ func TestApplyIdentityHeadersPerRealm(t *testing.T) {
 	if got := req.Header.Get("x-codebuddy-request"); got != "1" {
 		t.Errorf("intl x-codebuddy-request = %q, want 1", got)
 	}
+	if got := req.Header.Get("x-requested-with"); got != "XMLHttpRequest" {
+		t.Errorf("x-requested-with = %q, want XMLHttpRequest on every identity", got)
+	}
+	for h, want := range map[string]string{
+		"x-stainless-lang":            "js",
+		"x-stainless-package-version": stainlessPackageVersion,
+		"x-stainless-os":              "MacOS",
+		"x-stainless-arch":            "x64",
+		"x-stainless-runtime":         "node",
+		"x-stainless-runtime-version": stainlessRuntimeVersion,
+		"x-stainless-retry-count":     "0",
+		"x-stainless-timeout":         "1200",
+	} {
+		if got := req.Header.Get(h); got != want {
+			t.Errorf("%s = %q, want %q (pinned SDK fingerprint)", h, got, want)
+		}
+	}
 	if got := req.Header.Get("Accept"); got != "text/event-stream" {
 		t.Errorf("Accept = %q, want text/event-stream", got)
 	}
@@ -144,6 +161,12 @@ func TestApplyIdentityHeadersPerRealm(t *testing.T) {
 	}
 	if got := reqCN.Header.Get("X-IDE-Type"); got != "CLI" {
 		t.Errorf("cn X-IDE-Type = %q, want CLI", got)
+	}
+	if got := reqCN.Header.Get("x-stainless-os"); got != "MacOS" {
+		t.Errorf("cn x-stainless-os = %q, want the pinned fingerprint, not the host OS", got)
+	}
+	if got := reqCN.Header.Get("x-requested-with"); got != "XMLHttpRequest" {
+		t.Errorf("cn x-requested-with = %q, want XMLHttpRequest", got)
 	}
 }
 

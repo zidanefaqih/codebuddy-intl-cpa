@@ -27,16 +27,27 @@ const (
 	// riskControlCode is the upstream code for "this account may not generate".
 	// Distinct from 11128 (channel/prompt mismatch) and 14018 (credits).
 	riskControlCode = "11140"
-	// riskControlCooldown keeps a flagged account out of routing. Unlike a 429
-	// it does not recover on its own, so the window is long and is meant to be
-	// cleared explicitly after the account is verified or replaced.
-	riskControlCooldown = 6 * time.Hour
 )
 
 // riskControlCodeRe matches the code inside an upstream envelope. It is matched
 // on the body because the failure arrives as HTTP 403 and the code is the only
 // stable field — the human message is localized.
 var riskControlCodeRe = regexp.MustCompile(`"code"\s*:\s*11140\b`)
+
+// riskBanWordingRe matches the body of an upstream that restricted the
+// *account*, not the request. The buddy family reuses "request illegal" for two
+// unrelated rejections and the difference is only in the body: 11140 with
+// account-restriction wording (plus its localized variants) is a ban — the
+// account is refused, not throttled — while a safety-review verdict refuses the
+// *request* and leaves the credential healthy. An unrelated upstream that
+// happens to say "restricted" in prose cannot put an account in a permanent
+// block, because the code must match too.
+var riskBanWordingRe = regexp.MustCompile(
+	`restricted due to unusual activity|been restricted|has been banned|unusual activity|appeal this restriction|账号存在异常行为|帳號存在異常行為`)
+
+// riskReviewWordingRe matches a request-side refusal: the verdict names the
+// content, not the account, so the credential stays eligible for other traffic.
+var riskReviewWordingRe = regexp.MustCompile(`safety review|安全审核`)
 
 // accountWarning is the panel-facing record of a flagged account.
 type accountWarning struct {
@@ -68,17 +79,37 @@ func isRiskControlResponse(statusCode int, body string) bool {
 func riskControlReason(body string) string {
 	lower := strings.ToLower(body)
 	switch {
-	case strings.Contains(lower, "unusual activity"):
-		return "unusual activity"
-	case strings.Contains(lower, "safety review"):
+	case riskReviewWordingRe.MatchString(lower):
 		return "safety review"
+	case riskBanWordingRe.MatchString(lower):
+		return "unusual activity"
 	}
 	return "upstream refused the account"
 }
 
+// isRiskRequestRefusal reports whether the upstream refused this *request* —
+// a verdict on the content, not the account. Cooling the account here would
+// burn a healthy credential on the gateway's own fault; the correct response
+// is to stop retrying the request verbatim and leave the account alone.
+func isRiskRequestRefusal(statusCode int, body string) bool {
+	if statusCode > 0 && statusCode < 400 {
+		return false
+	}
+	lower := strings.ToLower(body)
+	return riskReviewWordingRe.MatchString(lower) ||
+		(strings.Contains(lower, "11128") && strings.Contains(lower, "illegal"))
+}
+
 // markAccountRiskWarning records the warning under every key the account is
-// known by and parks it on a long cooldown. The state write is best effort; the
-// in-process cooldown still protects traffic if the disk write fails.
+// known by and takes it out of routing until the operator clears it. The state
+// write is best effort; the in-process block still protects traffic if the
+// disk write fails.
+//
+// The block is deliberately never timed: a 11140 restriction does not expire —
+// the account is refused, not throttled, so a window only re-sends traffic to
+// it (and burns sibling accounts through the retry budget) every time the
+// window lapses. Recovery probes are reserved for soft rate limits; a warning
+// is never one.
 func markAccountRiskWarning(keys []string, body string) {
 	keys = uniqueNonEmptyKeys(keys)
 	if len(keys) == 0 {
@@ -101,12 +132,11 @@ func markAccountRiskWarning(keys []string, body string) {
 		}
 		return nil
 	})
-	until := time.Now().Add(riskControlCooldown)
 	for _, k := range keys {
-		markAuthCooldownReason(k, until, "risk_control")
+		blockAuthIndefinitely(k, "risk_control")
 	}
-	fmt.Fprintf(os.Stderr, "[workbuddy] risk-control: auth=%q flagged reason=%q until=%s\n",
-		redactSecrets(keys[0]), w.Reason, until.UTC().Format(time.RFC3339))
+	fmt.Fprintf(os.Stderr, "[workbuddy] risk-control: auth=%q flagged reason=%q (no re-probe until restart or state clear)\n",
+		redactSecrets(keys[0]), w.Reason)
 }
 
 // markCandidateRiskBlocked is the failover-loop entry point: it flags the
@@ -173,13 +203,16 @@ func uniqueNonEmptyKeys(keys []string) []string {
 }
 
 // classifyAccountFailure maps an upstream failure to the failover outcome used
-// by every attempt loop, so the three loops cannot drift apart. Risk control is
-// treated as "skip this account, try the next one" (like a rate limit), while
-// markCandidateUnavailable gives it its own long cooldown and warning.
+// by every attempt loop, so the three loops cannot drift apart. A request
+// refusal (11128 / safety review) stops the retry loop without touching the
+// account; the account-level ban gets its own long block and warning via
+// markCandidateUnavailable.
 func classifyAccountFailure(status int, body string) attemptOutcome {
 	switch {
 	case isAccountExhaustedResponse(status, body):
 		return outcomeAccountExhausted
+	case isRiskRequestRefusal(status, body):
+		return outcomeStop
 	case isRiskControlResponse(status, body):
 		return outcomeRateLimited
 	case upstreamErrorCode(body) == modelNotAllowedCode:

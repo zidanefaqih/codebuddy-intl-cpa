@@ -236,6 +236,16 @@ func deviceTokenFor(sa *storedAuth) string {
 	return ""
 }
 
+// `x-stainless-*` is the OpenAI Node SDK 6.25.0 fingerprint: every official
+// client built on that SDK reports it on chat calls, so its absence is a
+// fingerprint gap no real client produces. The values are pinned instead of
+// host-derived: a plugin running on Windows/ARM would otherwise advertise an
+// OS/arch pair the upstream's risk model has never seen for this client brand.
+const (
+	stainlessPackageVersion = "6.25.0"
+	stainlessRuntimeVersion = "v24.21.0"
+)
+
 // applyIdentityHeaders stamps the per-request client identity the upstream
 // validates. It is the single place that decides what an official client looks
 // like, so a future upstream change has one edit site.
@@ -246,7 +256,20 @@ func applyIdentityHeaders(req *http.Request, sa *storedAuth) {
 	req.Header.Set("X-Product", "SaaS")
 	req.Header.Set("X-IDE-Type", identity)
 	req.Header.Set("X-IDE-Name", identity)
+	// Request-shape markers both real clients send on every call regardless of
+	// transport (verified against the live gateway; only browser transport
+	// headers like origin/referer differ per identity).
+	req.Header.Set("x-requested-with", "XMLHttpRequest")
 	req.Header.Set("x-codebuddy-request", "1")
+	// SDK fingerprint family; see the consts above for why the values are pinned.
+	req.Header.Set("x-stainless-lang", "js")
+	req.Header.Set("x-stainless-package-version", stainlessPackageVersion)
+	req.Header.Set("x-stainless-os", "MacOS")
+	req.Header.Set("x-stainless-arch", "x64")
+	req.Header.Set("x-stainless-runtime", "node")
+	req.Header.Set("x-stainless-runtime-version", stainlessRuntimeVersion)
+	req.Header.Set("x-stainless-retry-count", "0")
+	req.Header.Set("x-stainless-timeout", "1200")
 	if tok := deviceTokenFor(sa); tok != "" {
 		req.Header.Set("X-Device-Token", tok)
 	}

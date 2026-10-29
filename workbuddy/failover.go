@@ -43,6 +43,8 @@ func markAuthCooldown(authID string, resetAt time.Time) {
 	markAuthCooldownReason(authID, resetAt, "429")
 }
 
+// markAuthCooldownReason records that the account reached a rate limit and must
+// not be retried until resetAt (zero/past → default 30m cooldown).
 func markAuthCooldownReason(authID string, resetAt time.Time, reason string) {
 	authID = strings.TrimSpace(authID)
 	if authID == "" {
@@ -64,6 +66,23 @@ func markAuthCooldownReason(authID string, resetAt time.Time, reason string) {
 		return
 	}
 	cooldowns[authID] = authCooldown{NextRetryAt: resetAt, Reason: reason, ProbeAt: probeAt}
+	cooldownMu.Unlock()
+}
+
+// blockAuthIndefinitely takes an account out of routing with no expiry and no
+// recovery probe — the in-process counterpart of a persisted account warning
+// (riskControlCode). Mirrors credits_exhausted: probeAt == NextRetryAt keeps
+// candidateSoftCooldown false and candidateProbeReady never fires, so the
+// routing sweep never turns this into a probe and only an explicit operator
+// lift (clearAccountRiskWarning / resetAuthCooldown) revives the account.
+func blockAuthIndefinitely(authID, reason string) {
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		return
+	}
+	farFuture := time.Now().AddDate(100, 0, 0)
+	cooldownMu.Lock()
+	cooldowns[authID] = authCooldown{NextRetryAt: farFuture, Reason: reason, ProbeAt: farFuture}
 	cooldownMu.Unlock()
 }
 
