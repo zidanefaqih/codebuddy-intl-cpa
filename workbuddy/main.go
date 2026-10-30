@@ -845,6 +845,21 @@ func toAuthData(sa *storedAuth) pluginapi.AuthData {
 func toAuthDataWithMetadata(sa *storedAuth, existing map[string]any, disabled bool) pluginapi.AuthData {
 	ad := toAuthDataOpts(sa, nil, disabled)
 	ad.Metadata = mergeAuthMetadata(sa, existing, disabled)
+	// host.auth.save consumes ParseAuth directly, without the file watcher's
+	// metadata-to-attribute normalization. Keep runtime aliases on that path
+	// and on refresh too; CPA still validates and sanitizes the alias entries.
+	aliases, exists := ad.Metadata["model_aliases"]
+	if !exists {
+		aliases = ad.Metadata["model-aliases"] // legacy spelling, as in CPA's watcher
+	}
+	if list, ok := aliases.([]any); ok && len(list) > 0 {
+		if encoded, err := json.Marshal(list); err == nil {
+			if ad.Attributes == nil {
+				ad.Attributes = make(map[string]string)
+			}
+			ad.Attributes["model_aliases"] = string(encoded)
+		}
+	}
 	return ad
 }
 
