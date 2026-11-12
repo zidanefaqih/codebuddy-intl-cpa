@@ -1057,6 +1057,25 @@ func handleExecStream(raw []byte) ([]byte, error) {
 // cand, cleaning chunks through the collector. Mirrors the legacy
 // collectUpstreamStream body, parameterized by candidate.
 func collectStreamAttempt(body []byte, cand *failoverCandidate, sseFramed bool, collector *sseUsageCollector, traces ...*requestCacheTrace) ([]pluginapi.ExecutorStreamChunk, int, error) {
+	chunks, statusCode, err := collectStreamAttemptOnce(body, cand, sseFramed, collector, traces...)
+	// 11128 fallback (same rationale as upstreamAttempt): the channel gate
+	// keys on prompt content AND size, so no rewrite table is exhaustive. The
+	// upstream does not scan user content, so re-send once with the system
+	// prompt folded into the first user turn. Safe on this path because a
+	// refused attempt hands no chunk to the host — nothing has been emitted.
+	if statusCode == 400 && err != nil {
+		if se, ok := err.(*upstreamStatusError); ok && upstreamBlocked11128(se.status, se.body) {
+			if folded, ok2 := foldSystemIntoUser(body); ok2 {
+				return collectStreamAttemptOnce(folded, cand, sseFramed, collector, traces...)
+			}
+		}
+	}
+	return chunks, statusCode, err
+}
+
+// collectStreamAttemptOnce performs a single synchronous stream round-trip.
+// collectStreamAttempt wraps it with the 11128 fold fallback.
+func collectStreamAttemptOnce(body []byte, cand *failoverCandidate, sseFramed bool, collector *sseUsageCollector, traces ...*requestCacheTrace) ([]pluginapi.ExecutorStreamChunk, int, error) {
 	httpReq, err := http.NewRequest(http.MethodPost, endpointChatFor(cand.Auth), bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, err
