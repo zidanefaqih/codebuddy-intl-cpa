@@ -94,14 +94,30 @@ func pumpWithFailover(ctx context.Context, cancel context.CancelFunc, req execut
 	if sa, err := parseStored(req.StorageJSON); err == nil {
 		realm = accountRegion(sa)
 	}
+	// 11128 fallback (see upstreamAttempt): the channel gate keys on prompt
+	// content AND size, so the sanitizer alone cannot be exhaustive. Re-send
+	// once with the system prompt folded into the first user turn. Retry only
+	// while nothing has been emitted to the client: replaying an already
+	// partially delivered stream would duplicate content.
 	fin := runStreamFailoverForSession(cands, requestSessionKey(req.ExecutorRequest, body, realm), func(cand *failoverCandidate) (bool, int, error) {
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointChatFor(cand.Auth), bytes.NewReader(body))
-		if err != nil {
-			return false, 0, err
+		pump := func(payload []byte) (bool, int, error) {
+			httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointChatFor(cand.Auth), bytes.NewReader(payload))
+			if err != nil {
+				return false, 0, err
+			}
+			backendHeaders(httpReq, cand.Auth)
+			trace.beginAttempt(httpReq, cand.AuthID)
+			return pumpAttempt(httpReq, streamID, sseFramed, req.Model, upstreamModel, cand.AuthID, candUID(cand, authUID), started, collector, trace)
 		}
-		backendHeaders(httpReq, cand.Auth)
-		trace.beginAttempt(httpReq, cand.AuthID)
-		return pumpAttempt(httpReq, streamID, sseFramed, req.Model, upstreamModel, cand.AuthID, candUID(cand, authUID), started, collector, trace)
+		emitted, status, err := pump(body)
+		if !emitted && status == 400 && err != nil {
+			if se, ok := err.(*upstreamStatusError); ok && upstreamBlocked11128(se.status, se.body) {
+				if folded, ok2 := foldSystemIntoUser(body); ok2 {
+					return pump(folded)
+				}
+			}
+		}
+		return emitted, status, err
 	}, ctx)
 
 	switch fin.Outcome {
