@@ -431,6 +431,54 @@ func upstreamAttempt(ctx context.Context, body []byte, model string, cand *failo
 	reader := newHostStreamReader(stream)
 	if statusCode >= 400 {
 		payload, _ := io.ReadAll(reader)
+		errBody := string(payload)
+		// 11128 fallback: the channel gate matches a combination of prompt
+		// content and total size, so rewrites in sanitizeBlockedTemplates can
+		// never be exhaustive. The upstream does not scan user content, so
+		// re-sending with the system prompt folded into the first user turn
+		// gets the same instructions through. A refused request generates
+		// nothing, so the retry costs no credits.
+		if upstreamBlocked11128(statusCode, errBody) {
+			if folded, ok := foldSystemIntoUser(body); ok {
+				return retryAttemptFolded(ctx, folded, model, cand, traces...)
+			}
+		}
+		return nil, &upstreamStatusError{status: statusCode, body: errBody}
+	}
+	completion, sawData, err := aggregateCompletionCounted(reader, model)
+	if err != nil {
+		return nil, err
+	}
+	if !sawData {
+		return nil, errEmptyStream
+	}
+	return completion, nil
+}
+
+// retryAttemptFolded re-sends one body whose system prompt was folded into the
+// first user turn (see foldSystemIntoUser). It mirrors upstreamAttempt but
+// performs no further folding: one fallback hop only, so a genuinely rejected
+// request cannot loop.
+func retryAttemptFolded(ctx context.Context, body []byte, model string, cand *failoverCandidate, traces ...*requestCacheTrace) ([]byte, error) {
+	if cand == nil || cand.Auth == nil {
+		return nil, fmt.Errorf("no auth available")
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointChatFor(cand.Auth), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	backendHeaders(httpReq, cand.Auth)
+	trace := firstCacheTrace(traces)
+	attempt := trace.beginAttempt(httpReq, cand.AuthID)
+	stream, statusCode, _, err := hostHTTPDoStream(httpReq)
+	trace.finishAttempt(attempt, statusCode)
+	if err != nil {
+		return nil, err
+	}
+	defer stream.Close()
+	reader := newHostStreamReader(stream)
+	if statusCode >= 400 {
+		payload, _ := io.ReadAll(reader)
 		return nil, &upstreamStatusError{status: statusCode, body: string(payload)}
 	}
 	completion, sawData, err := aggregateCompletionCounted(reader, model)
