@@ -304,3 +304,65 @@ func TestRewriteSystemForUpstream_DeepSeekHarness(t *testing.T) {
 		t.Fatalf("rewrite lost the surrounding prompt: %s", string(out))
 	}
 }
+
+// The DeepSeek​ Harness Web-GUI orientation sentence and the "this page, this
+// GUI, or this app" back-reference that follows it are a CONTEXTUAL pair:
+// each half alone answers 200, the pair answers 400 / code 11128. Verbatim
+// replacement of the intro line never catches it, so it needs its own rule.
+func TestSanitizeBlockedTemplates_DeepSeekHarnessGUIPair(t *testing.T) {
+	in := "You are interacting with the user through the DeepSeek​ Harness Web GUI " +
+		"whose URL the runtime context names. When the user refers to \"this page\", " +
+		"\"this GUI\", or \"this app\" without naming another target, they mean this GUI."
+	out := sanitizeBlockedTemplates(in)
+	if strings.Contains(out, `"this page"`) && strings.Contains(out, `"this GUI"`) &&
+		strings.Contains(out, `"this app"`) {
+		t.Fatalf("the this page / this GUI / this app triple survived: %q", out)
+	}
+	if !strings.Contains(out, "current interface") {
+		t.Fatalf("rewrite dropped the back-reference meaning: %q", out)
+	}
+	if !strings.Contains(out, "Web GUI") {
+		t.Fatalf("rewrite should keep the orientation sentence: %q", out)
+	}
+}
+
+// The back-reference clause alone is still rewritten (orientation sentence
+// reworded by a future client, or absent entirely).
+func TestSanitizeBlockedTemplates_BackRefAlone(t *testing.T) {
+	in := `When the user refers to "this page", "this GUI", or "this app" without naming another target, they mean this GUI.`
+	out := sanitizeBlockedTemplates(in)
+	if strings.Contains(out, `"this page"`) {
+		t.Fatalf("back-reference triple survived: %q", out)
+	}
+	if !strings.Contains(out, "current interface") {
+		t.Fatalf("got %q", out)
+	}
+}
+
+// Rewording must be idempotent-ish: a second pass over already-sanitized text
+// must not mangle it further.
+func TestSanitizeBlockedTemplates_GUIIdempotent(t *testing.T) {
+	in := "You are interacting with the user through the DeepSeek​ Harness Web GUI whose URL the runtime context names."
+	once := sanitizeBlockedTemplates(in)
+	twice := sanitizeBlockedTemplates(once)
+	if once != twice {
+		t.Fatalf("not idempotent: %q -> %q", once, twice)
+	}
+}
+
+// DSH ships the intro sentence with U+200B between "DeepSeek" and "Harness".
+// The original pattern spelled that separator as an ordinary space, so the
+// rule missed every real request and the upstream kept answering 400 / 11128.
+func TestSanitizeBlockedTemplates_DeepSeekHarnessZeroWidth(t *testing.T) {
+	in := "You are an AI agent powered by DeepSeek\u200b Harness."
+	out := sanitizeBlockedTemplates(in)
+	if out == in {
+		t.Fatal("zero-width variant was not rewritten")
+	}
+	if strings.Contains(out, "\u200b") {
+		t.Fatalf("zero-width separator survived: %q", out)
+	}
+	if !strings.HasPrefix(out, deepSeekHarnessIntroReplacement) {
+		t.Fatalf("got %q want prefix %q", out, deepSeekHarnessIntroReplacement)
+	}
+}

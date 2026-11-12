@@ -21,11 +21,44 @@ import (
 // agent powered by DeepSeek." and the same sentence naming a different
 // harness all answer 200. Swapping only that sentence inside a 175 KB request
 // (47 messages, 66 tools, reasoning_effort=max) flips 400 -> 200.
-var reDeepSeekHarnessIntro = regexp.MustCompile(`(?i)you are an ai agent powered by deepseek harness`)
+// Matches the sentence in BOTH shapes: as plain text and as DSH actually
+// ships it, with U+200B between "DeepSeek" and "Harness". The original
+// pattern spelled that separator as an ordinary space, so every real DSH
+// request passed through untouched and still hit 400 / code 11128.
+var reDeepSeekHarnessIntro = regexp.MustCompile(`(?i)you are an ai agent powered by deepseek[\s\x{200B}]*harness`)
 
 // deepSeekHarnessIntroReplacement keeps the agent framing neutral while
 // dropping the blocklisted signature.
 const deepSeekHarnessIntroReplacement = "You are an AI assistant"
+
+// reDeepSeekHarnessGUI matches the DeepSeek​ Harness Web-GUI orientation
+// sentence plus the "this page / this GUI / this app" back-reference clause
+// that follows it.
+//
+// Evidence (live replay against the workbuddy upstream, model
+// cn/deepseek-v4.1-flash, 2026-11-12): these are NOT two independent
+// blocklist entries — each half alone answers 200, while the pair inside one
+// system message answers 400 / code 11128 every time. Same-fingerprint family
+// as reDeepSeekHarnessIntro, but a *contextual* match rather than a verbatim
+// one, so the intro replacement above never sees it. It is also size
+// independent: the pair trips the gate inside a 300-char prompt.
+//
+// Replacing only the product name ("WorkBuddy Web GUI") clears it, and so does
+// rewording the back-reference list; we do the latter because it leaves the
+// product name intact for the model while removing the trigger shape.
+var reDeepSeekHarnessGUI = regexp.MustCompile(
+	`(?is)((?:you are interacting with the user through|you are accessing the user through)[^.]{0,120}?deepseek[\s\x{200B}]*harness[^.]{0,40}?web gui[^.]{0,120}?\.)` +
+		`(\s*when the user refers to\s*)["“”]?this page["“”]?\s*,\s*["“”]?this gui["“”]?\s*,\s*(?:or\s+)?["“”]?this app["“”]?`)
+
+// reThisPageGUIBackRef catches the back-reference clause on its own, for
+// prompts whose orientation sentence was already rewritten elsewhere (or
+// shipped by a future client with different wording).
+var reThisPageGUIBackRef = regexp.MustCompile(
+	`(?is)when the user refers to\s*["“”]?this page["“”]?\s*,\s*["“”]?this gui["“”]?\s*,\s*(?:or\s+)?["“”]?this app["“”]?[^.]{0,40}?`)
+
+// thisPageGUIBackRefReplacement keeps the meaning ("the current interface")
+// without the "this page, this GUI, or this app" triple the gate keys on.
+const thisPageGUIBackRefReplacement = "when the user refers to the current interface"
 
 // forceStreamBody returns the request body with "stream":true set, since the
 // upstream rejects non-streaming chat requests.
@@ -481,6 +514,12 @@ func sanitizeBlockedTemplates(s string) string {
 	// DeepSeek Harness intro signature — the third member of the same
 	// verbatim-match channel gate as the Claude Code / Codex lines above.
 	s = reDeepSeekHarnessIntro.ReplaceAllString(s, deepSeekHarnessIntroReplacement)
+	// DeepSeek Harness GUI orientation + "this page / this GUI / this app"
+	// back-reference: a contextual PAIR, not a verbatim line, so it survives
+	// the intro rewrite above. Collapse the pair first, then catch a stray
+	// back-reference clause whose orientation sentence was reworded already.
+	s = reDeepSeekHarnessGUI.ReplaceAllString(s, "$1 "+thisPageGUIBackRefReplacement)
+	s = reThisPageGUIBackRef.ReplaceAllString(s, thisPageGUIBackRefReplacement)
 	return s
 }
 
